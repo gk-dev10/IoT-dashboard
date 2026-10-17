@@ -9,6 +9,13 @@ import json
 import logging
 import os
 import queue
+import sys
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(BASE_DIR)
+for path in (REPO_ROOT, BASE_DIR):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 from flask import (
     Flask,

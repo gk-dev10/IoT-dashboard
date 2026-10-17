@@ -1,218 +1,492 @@
-"""
-Smart Anti-Stoop Vest — Flask Backend
-======================================
-REST API (receives data from ESP32) + Web Dashboard (for caregiver/clinician).
+"""Smart Posture T-Shirt v2 — Flask Backend Service.
 
-Run:
-    pip install -r requirements.txt
-    python app.py
-
-Server listens on 0.0.0.0:5000 by default — update SERVER_URL in the ESP32
-firmware to match this machine's local IP address (e.g. http://192.168.1.100:5000/api/data).
+REST API for ESP32 telemetry ingestion, bi-directional commands,
+Server-Sent Events streaming, and static hosting for the web dashboard.
 """
 
-from flask import Flask, request, jsonify, render_template
-from datetime import datetime
-import sqlite3
+from datetime import datetime, timedelta, timezone
+import json
+import logging
 import os
+import queue
 
-app = Flask(__name__)
-DB_PATH = os.path.join(os.path.dirname(__file__), "vest_data.db")
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    request,
+    send_from_directory,
+    stream_with_context,
+)
+
+from backend.commands import (
+    create_command,
+    expire_stale_commands,
+    get_pending_commands_for_device,
+    get_recent_commands,
+    mark_commands_sent,
+    merge_commands,
+)
+from backend.db import DEFAULT_DB_PATH, get_db, init_db
+from backend.episodes import (
+    check_and_close_timed_out_episodes,
+    process_episode_transition,
+)
+from backend.models import (
+    get_current_utc_iso,
+    sanitize_telemetry,
+    validate_command_payload,
+)
+from backend.sse import sse_manager
+
+# ---------------------------------------------------------------------------
+# Logging configuration
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("posture_backend")
+
+# ---------------------------------------------------------------------------
+# App & Paths configuration
+# ---------------------------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(BASE_DIR)
+WEB_DIR = os.path.join(REPO_ROOT, "web")
+
+app = Flask(__name__, static_folder=None)
+
+DEVICE_TOKEN = os.environ.get("VEST_DEVICE_TOKEN", "change-me")
+DB_PATH = os.environ.get("VEST_DB_PATH", DEFAULT_DB_PATH)
+DEBUG_MODE = os.environ.get("VEST_DEBUG", "0").lower() in ("1", "true", "yes")
+SERVER_PORT = int(os.environ.get("VEST_PORT", "5000"))
+
+
+def build_live_payload(conn):
+    """Construct the full live state payload for /api/live and SSE telemetry event."""
+    check_and_close_timed_out_episodes(conn, max_gap_seconds=10)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM telemetry ORDER BY id DESC LIMIT 1")
+    row = cursor.fetchone()
+
+    telemetry_data = dict(row) if row else None
+    online = False
+    seconds_since_last = None
+
+    if telemetry_data and telemetry_data.get("ts"):
+        try:
+            last_dt = datetime.fromisoformat(telemetry_data["ts"])
+            seconds_since_last = round(
+                max(0.0, (datetime.now(timezone.utc) - last_dt).total_seconds()), 1
+            )
+            online = seconds_since_last < 5.0
+        except Exception:
+            online = False
+
+    recent_cmds = get_recent_commands(conn, limit=5)
+
+    return {
+        "online": online,
+        "seconds_since_last": seconds_since_last,
+        "telemetry": telemetry_data,
+        "commands": recent_cmds,
+    }
 
 
 # ---------------------------------------------------------------------------
-# Database setup
+# Static Web Hosting Routes
 # ---------------------------------------------------------------------------
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+@app.route("/", methods=["GET"])
+def index():
+    """Serve the v2 web application dashboard."""
+    return send_from_directory(WEB_DIR, "index.html")
 
 
-def init_db():
-    conn = get_db()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS posture_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            flex_upper REAL,
-            flex_lower REAL,
-            imu_pitch_deg REAL,
-            adxl_tilt_deg REAL,
-            is_standing INTEGER,
-            bend_detected INTEGER,
-            vibration_active INTEGER,
-            buzzer_active INTEGER
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS vitals_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            temperature_c REAL,
-            humidity_pct REAL,
-            heart_rate_bpm INTEGER
-        )
-    """)
-    conn.commit()
-    conn.close()
+@app.route("/<path:path>", methods=["GET"])
+def serve_web_assets(path):
+    """Serve static assets from web directory."""
+    target_file = os.path.join(WEB_DIR, path)
+    if os.path.exists(target_file) and not os.path.isdir(target_file):
+        return send_from_directory(WEB_DIR, path)
+    # Default back to index.html for unknown web paths
+    return send_from_directory(WEB_DIR, "index.html")
 
 
 # ---------------------------------------------------------------------------
-# REST API
+# API Endpoints
 # ---------------------------------------------------------------------------
+@app.route("/api/health", methods=["GET"])
+def health():
+    """Health check endpoint."""
+    return jsonify({"status": "ok"})
+
+
 @app.route("/api/data", methods=["POST"])
-def receive_data():
-    """Receives a JSON payload from the ESP32 and writes it to both tables."""
+def ingest_data():
+    """
+    Ingest telemetry data from ESP32.
+    Validates token, writes telemetry, tracks episodes, and delivers pending commands.
+    """
+    token = request.headers.get("X-Device-Token")
+    if token != DEVICE_TOKEN:
+        logger.warning(
+            "Device token rejection from %s (provided: %r)",
+            request.remote_addr,
+            token,
+        )
+        return jsonify({"error": "Unauthorized"}), 401
+
     payload = request.get_json(silent=True)
-    if payload is None:
+    if not isinstance(payload, dict):
         return jsonify({"error": "Invalid or missing JSON body"}), 400
 
-    now = datetime.utcnow().isoformat()
-    conn = get_db()
+    now_iso = get_current_utc_iso()
+    t = sanitize_telemetry(payload, now_iso)
+
+    conn = get_db(DB_PATH)
+    commands_to_send = None
     try:
-        conn.execute(
-            """INSERT INTO posture_events
-               (timestamp, flex_upper, flex_lower, imu_pitch_deg, adxl_tilt_deg,
-                is_standing, bend_detected, vibration_active, buzzer_active)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                now,
-                payload.get("flex_upper"),
-                payload.get("flex_lower"),
-                payload.get("imu_pitch_deg"),
-                payload.get("adxl_tilt_deg"),
-                int(bool(payload.get("is_standing"))),
-                int(bool(payload.get("bend_detected"))),
-                int(bool(payload.get("vibration_active"))),
-                int(bool(payload.get("buzzer_active"))),
-            ),
-        )
-        conn.execute(
-            """INSERT INTO vitals_log
-               (timestamp, temperature_c, humidity_pct, heart_rate_bpm)
-               VALUES (?, ?, ?, ?)""",
-            (
-                now,
-                payload.get("temperature_c"),
-                payload.get("humidity_pct"),
-                payload.get("heart_rate_bpm"),
-            ),
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO telemetry (
+                ts, device_id, fw, uptime_s, state, armed, muted, is_standing,
+                moving, bend_detected, possible_bend, bend_duration_ms,
+                imu_pitch_deg, imu_roll_deg, imu_says_bent, flex_upper,
+                flex_lower, flex_says_bent, adxl_tilt_deg, vibration_active,
+                buzzer_active, led_green, led_yellow, led_red, heart_rate_bpm,
+                finger_present, temperature_c, humidity_pct, mpu_ok, adxl_ok,
+                max_ok, flex_enabled, bend_on_deg, bend_off_deg,
+                vibrate_delay_s, buzzer_delay_s, wifi_rssi
+            ) VALUES (
+                :ts, :device_id, :fw, :uptime_s, :state, :armed, :muted, :is_standing,
+                :moving, :bend_detected, :possible_bend, :bend_duration_ms,
+                :imu_pitch_deg, :imu_roll_deg, :imu_says_bent, :flex_upper,
+                :flex_lower, :flex_says_bent, :adxl_tilt_deg, :vibration_active,
+                :buzzer_active, :led_green, :led_yellow, :led_red, :heart_rate_bpm,
+                :finger_present, :temperature_c, :humidity_pct, :mpu_ok, :adxl_ok,
+                :max_ok, :flex_enabled, :bend_on_deg, :bend_off_deg,
+                :vibrate_delay_s, :buzzer_delay_s, :wifi_rssi
+            )
+        """,
+            t,
         )
         conn.commit()
+
+        # Update episode tracking
+        process_episode_transition(
+            conn,
+            device_id=t["device_id"],
+            incoming_state=t["state"],
+            imu_pitch_deg=t["imu_pitch_deg"],
+            bend_duration_ms=t["bend_duration_ms"],
+            incoming_ts=now_iso,
+        )
+
+        # Check and merge pending commands for the vest
+        pending = get_pending_commands_for_device(conn, t["device_id"])
+        if pending:
+            commands_to_send = merge_commands(pending)
+            cmd_ids = [cmd["id"] for cmd in pending]
+            mark_commands_sent(conn, cmd_ids)
+            # Broadcast updated commands to SSE listeners
+            sse_manager.broadcast("command", get_recent_commands(conn, limit=5))
+
+        # Log one line per ingest at INFO level
+        pitch_str = f"{t['imu_pitch_deg']:.1f}°" if t["imu_pitch_deg"] is not None else "N/A"
+        logger.info(
+            "Ingest [%s] state=%s pitch=%s standing=%s bend=%s",
+            t["device_id"],
+            t["state"],
+            pitch_str,
+            t["is_standing"],
+            t["bend_detected"],
+        )
+
+        # Broadcast live telemetry event
+        live_payload = build_live_payload(conn)
+        sse_manager.broadcast("telemetry", live_payload)
+
     finally:
         conn.close()
 
-    return jsonify({"status": "ok", "received_at": now}), 201
+    response_data = {"status": "ok", "received_at": now_iso}
+    if commands_to_send:
+        response_data["commands"] = commands_to_send
+
+    return jsonify(response_data), 201
 
 
-@app.route("/api/status", methods=["GET"])
-def get_status():
-    """Returns the most recent posture state and vitals for the live status widget."""
-    conn = get_db()
-    posture = conn.execute(
-        "SELECT * FROM posture_events ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-    vitals = conn.execute(
-        "SELECT * FROM vitals_log ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-    conn.close()
+@app.route("/api/live", methods=["GET"])
+def get_live():
+    """Return latest telemetry, online status, and recent commands."""
+    conn = get_db(DB_PATH)
+    try:
+        live_data = build_live_payload(conn)
+        return jsonify(live_data)
+    finally:
+        conn.close()
 
-    return jsonify({
-        "posture": dict(posture) if posture else None,
-        "vitals": dict(vitals) if vitals else None,
-    })
+
+@app.route("/api/stream", methods=["GET"])
+def event_stream():
+    """Server-Sent Events endpoint streaming telemetry and command events."""
+    q = sse_manager.subscribe()
+
+    def generate():
+        try:
+            # Yield initial live state immediately
+            conn = get_db(DB_PATH)
+            try:
+                init_state = build_live_payload(conn)
+            finally:
+                conn.close()
+
+            yield f"event: telemetry\ndata: {json.dumps(init_state)}\n\n"
+
+            while True:
+                try:
+                    # Wait for next event or send heartbeat comment every 15s
+                    msg = q.get(timeout=15.0)
+                    yield msg
+                except queue.Empty:
+                    yield ": heartbeat\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            sse_manager.unsubscribe(q)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
 
 
 @app.route("/api/history", methods=["GET"])
 def get_history():
-    """Returns historical posture events, optionally filtered by ?limit=N (default 100)."""
-    limit = request.args.get("limit", default=100, type=int)
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM posture_events ORDER BY id DESC LIMIT ?", (limit,)
-    ).fetchall()
-    vitals_rows = conn.execute(
-        "SELECT * FROM vitals_log ORDER BY id DESC LIMIT ?", (limit,)
-    ).fetchall()
-    conn.close()
+    """
+    Return recent telemetry points in chronological order.
+    Query parameters:
+      minutes: int (default 10)
+      limit: int (default 600)
+    """
+    try:
+        minutes = max(1, min(1440, int(request.args.get("minutes", 10))))
+        limit = max(10, min(5000, int(request.args.get("limit", 600))))
+    except ValueError:
+        return jsonify({"error": "Invalid query parameters"}), 400
 
-    return jsonify({
-        "posture_events": [dict(r) for r in reversed(rows)],
-        "vitals_log": [dict(r) for r in reversed(vitals_rows)],
-    })
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+
+    conn = get_db(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM telemetry
+            WHERE ts >= ?
+            ORDER BY id ASC
+        """,
+            (cutoff,),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+
+        # Downsample if total points exceed limit
+        if len(rows) > limit:
+            step = len(rows) / float(limit)
+            downsampled = [rows[int(i * step)] for i in range(limit)]
+            # Ensure the absolute latest point is included
+            downsampled[-1] = rows[-1]
+            rows = downsampled
+
+        return jsonify(rows)
+    finally:
+        conn.close()
 
 
-@app.route("/api/alerts", methods=["GET"])
-def get_alerts():
-    """Returns only the events where a stoop was actually detected (alert log)."""
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM posture_events WHERE bend_detected = 1 ORDER BY id DESC LIMIT 50"
-    ).fetchall()
-    conn.close()
-    return jsonify([dict(r) for r in rows])
+@app.route("/api/episodes", methods=["GET"])
+def get_episodes():
+    """Return recent bend episodes (newest first)."""
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 50))))
+    except ValueError:
+        limit = 50
+
+    conn = get_db(DB_PATH)
+    try:
+        check_and_close_timed_out_episodes(conn, max_gap_seconds=10)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, device_id, start_ts, end_ts, max_level, peak_pitch_deg, duration_ms
+            FROM episodes
+            ORDER BY id DESC
+            LIMIT ?
+        """,
+            (limit,),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        return jsonify(rows)
+    finally:
+        conn.close()
 
 
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
-    """Summary numbers for the last 24 hours (used by the Streamlit dashboard)."""
-    from datetime import timedelta
-    cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat()
-    push_interval_s = 5  # ESP32 posts every 5 seconds
+    """Aggregated statistics over the specified hours window (default 24)."""
+    try:
+        hours = max(1, min(720, int(request.args.get("hours", 24))))
+    except ValueError:
+        hours = 24
 
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT bend_detected FROM posture_events WHERE timestamp >= ? ORDER BY id ASC",
-        (cutoff,),
-    ).fetchall()
-    hr = conn.execute(
-        "SELECT AVG(heart_rate_bpm) AS avg_hr FROM vitals_log "
-        "WHERE timestamp >= ? AND heart_rate_bpm > 0",
-        (cutoff,),
-    ).fetchone()
-    conn.close()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
-    total = len(rows)
-    stoop_samples = sum(1 for r in rows if r["bend_detected"])
+    conn = get_db(DB_PATH)
+    try:
+        check_and_close_timed_out_episodes(conn, max_gap_seconds=10)
+        cursor = conn.cursor()
 
-    # Count separate stoop episodes and the longest one (runs of consecutive bent samples)
-    episodes, longest, run = 0, 0, 0
-    for r in rows:
-        if r["bend_detected"]:
-            run += 1
-            longest = max(longest, run)
-        else:
-            if run > 0:
-                episodes += 1
-            run = 0
-    if run > 0:
-        episodes += 1
+        # Episodes stats
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS ep_count, MAX(duration_ms) AS max_dur
+            FROM episodes
+            WHERE start_ts >= ?
+        """,
+            (cutoff,),
+        )
+        ep_row = cursor.fetchone()
+        episode_count = ep_row["ep_count"] if ep_row else 0
+        longest_bend_ms = ep_row["max_dur"] if ep_row and ep_row["max_dur"] else 0
 
-    return jsonify({
-        "total_samples": total,
-        "stoop_samples": stoop_samples,
-        "stoop_episodes": episodes,
-        "longest_stoop_seconds": longest * push_interval_s,
-        "percent_time_stooped": round(100 * stoop_samples / total, 1) if total else 0,
-        "avg_heart_rate_bpm": round(hr["avg_hr"], 1) if hr and hr["avg_hr"] else None,
-    })
+        # Telemetry aggregate stats
+        cursor.execute(
+            """
+            SELECT
+                COUNT(*) AS total_samples,
+                SUM(CASE WHEN state IN ('WARNING', 'ALERT') THEN 1 ELSE 0 END) AS stoop_samples,
+                SUM(CASE WHEN is_standing = 1 THEN 1 ELSE 0 END) AS standing_samples,
+                SUM(CASE WHEN is_standing = 0 THEN 1 ELSE 0 END) AS sitting_samples,
+                AVG(CASE WHEN heart_rate_bpm IS NOT NULL AND heart_rate_bpm > 0 THEN heart_rate_bpm ELSE NULL END) AS avg_hr
+            FROM telemetry
+            WHERE ts >= ?
+        """,
+            (cutoff,),
+        )
+        t_row = cursor.fetchone()
+
+        total = t_row["total_samples"] if t_row else 0
+        stoop_samples = t_row["stoop_samples"] if t_row and t_row["stoop_samples"] else 0
+        standing_samples = t_row["standing_samples"] if t_row and t_row["standing_samples"] else 0
+        sitting_samples = t_row["sitting_samples"] if t_row and t_row["sitting_samples"] else 0
+        avg_hr = round(t_row["avg_hr"], 1) if t_row and t_row["avg_hr"] else None
+
+        percent_time_stooped = round(100.0 * stoop_samples / total, 1) if total > 0 else 0.0
+        percent_standing = round(100.0 * standing_samples / total, 1) if total > 0 else 0.0
+        percent_sitting = round(100.0 * sitting_samples / total, 1) if total > 0 else 0.0
+
+        return jsonify({
+            "hours": hours,
+            "episode_count": episode_count,
+            "longest_bend_ms": longest_bend_ms,
+            "longest_bend_s": round(longest_bend_ms / 1000.0, 1),
+            "percent_time_stooped": percent_time_stooped,
+            "percent_standing": percent_standing,
+            "percent_sitting": percent_sitting,
+            "avg_heart_rate_bpm": avg_hr,
+            "total_samples": total,
+        })
+    finally:
+        conn.close()
+
+
+@app.route("/api/commands", methods=["POST"])
+def post_command():
+    """
+    Receive and queue a command from the UI.
+    Allowed formats:
+      {"type": "calibrate"}
+      {"type": "mute", "seconds": 60}
+      {"type": "test", "target": "buzzer"}
+      {"type": "config", "bend_on_deg": 20, ...}
+    """
+    data = request.get_json(silent=True)
+    is_valid, err_msg, sanitized = validate_command_payload(data)
+    if not is_valid:
+        return jsonify({"error": err_msg}), 400
+
+    device_id = (data.get("device_id") or "vest-01").strip()
+    cmd_type = sanitized["type"]
+
+    conn = get_db(DB_PATH)
+    try:
+        cmd_record = create_command(conn, device_id, cmd_type, sanitized)
+        # Notify SSE subscribers that a new command was created
+        sse_manager.broadcast("command", get_recent_commands(conn, limit=5))
+        return jsonify(cmd_record), 201
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
-# Dashboard (HTML front-end)
+# Backward Compatibility Shims
 # ---------------------------------------------------------------------------
-@app.route("/dashboard", methods=["GET"])
-def dashboard():
-    return render_template("dashboard.html")
+@app.route("/api/status", methods=["GET"])
+def legacy_status():
+    """Shim for legacy status call."""
+    conn = get_db(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM telemetry ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        t = dict(row) if row else None
+        return jsonify({
+            "posture": t,
+            "vitals": {
+                "temperature_c": t.get("temperature_c") if t else None,
+                "humidity_pct": t.get("humidity_pct") if t else None,
+                "heart_rate_bpm": t.get("heart_rate_bpm") if t else None,
+            }
+            if t
+            else None,
+        })
+    finally:
+        conn.close()
 
 
-@app.route("/", methods=["GET"])
-def index():
-    return dashboard()
+@app.route("/api/alerts", methods=["GET"])
+def legacy_alerts():
+    """Shim for legacy alerts call."""
+    conn = get_db(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM telemetry
+            WHERE bend_detected = 1
+            ORDER BY id DESC LIMIT 50
+        """)
+        rows = [dict(r) for r in cursor.fetchall()]
+        return jsonify(rows)
+    finally:
+        conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Server Entrypoint
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    init_db()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    init_db(DB_PATH)
+    logger.info("Database initialized at %s", DB_PATH)
+    logger.info(
+        "Starting Flask server on 0.0.0.0:%d (debug=%s)",
+        SERVER_PORT,
+        DEBUG_MODE,
+    )
+    app.run(host="0.0.0.0", port=SERVER_PORT, debug=DEBUG_MODE, threaded=True)

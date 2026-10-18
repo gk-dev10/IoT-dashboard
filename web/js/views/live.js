@@ -276,5 +276,9 @@ export class LiveView {
       this.unsubscribe();
       this.unsubscribe = null;
     }
+    if (this.chartsComp && typeof this.chartsComp.destroy === "function") {
+      this.chartsComp.destroy();
+    }
+    this.container.innerHTML = "";
   }
 }

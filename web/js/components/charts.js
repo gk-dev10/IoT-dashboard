@@ -319,4 +319,19 @@ export class ChartsComponent {
       this.envChart.update();
     }
   }
+
+  destroy() {
+    if (this.pitchChart) {
+      try { this.pitchChart.destroy(); } catch (e) {}
+      this.pitchChart = null;
+    }
+    if (this.hrChart) {
+      try { this.hrChart.destroy(); } catch (e) {}
+      this.hrChart = null;
+    }
+    if (this.envChart) {
+      try { this.envChart.destroy(); } catch (e) {}
+      this.envChart = null;
+    }
+  }
 }

@@ -5,6 +5,7 @@
 import { api } from "./api.js";
 import { store } from "./store.js";
 import { LiveView } from "./views/live.js";
+import { AnalysisView } from "./views/analysis.js";
 import { HistoryView } from "./views/history.js";
 import { AlertsView } from "./views/alerts.js";
 

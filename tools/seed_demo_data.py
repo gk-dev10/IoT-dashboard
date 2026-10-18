@@ -26,7 +26,8 @@ from backend.db import DEFAULT_DB_PATH, get_db, init_db
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Seed synthetic posture & vitals demo data")
-    parser.add_argument("--minutes", type=int, default=120, help="Number of minutes of history to generate")
+    parser.add_argument("--minutes", type=int, default=None, help="Number of minutes of history to generate (overrides --days if specified)")
+    parser.add_argument("--days", type=int, default=1, help="Number of days of history to generate with multi-session daytime schedule (default 1)")
     parser.add_argument("--device-id", default="sim-vest-01", help="Device ID to tag telemetry with")
     parser.add_argument("--effects", dest="effects", action="store_true", default=True, help="Simulate posture impact on HR")
     parser.add_argument("--no-effects", dest="effects", action="store_false", help="Generate posture and HR independently (control data)")
@@ -36,7 +37,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def generate_seed_data(minutes=120, device_id="sim-vest-01", effects=True, seed=42, clear_sim=False, db_path=None):
+def generate_seed_data(minutes=None, days=1, device_id="sim-vest-01", effects=True, seed=42, clear_sim=False, db_path=None):
     random.seed(seed)
     db = db_path or os.environ.get("VEST_DB_PATH", DEFAULT_DB_PATH)
     init_db(db)
@@ -51,162 +52,204 @@ def generate_seed_data(minutes=120, device_id="sim-vest-01", effects=True, seed=
                 conn.execute("DELETE FROM telemetry WHERE device_id = ?", (device_id,))
                 conn.execute("DELETE FROM episodes WHERE device_id = ?", (device_id,))
 
-            total_seconds = max(60, minutes * 60)
-            now_dt = datetime.now(timezone.utc)
-            start_dt = now_dt - timedelta(seconds=total_seconds)
-
             telemetry_rows = []
             episodes = []
 
-            # Baseline state
-            hr_baseline = 72.0
-            temp_baseline = 24.5
-            hum_baseline = 52.0
+            now_dt = datetime.now(timezone.utc)
 
+            # Determine session intervals: list of (session_start_dt, session_duration_s)
+            session_intervals = []
+            if minutes is not None:
+                # Single continuous span for the specified minutes
+                total_s = max(60, minutes * 60)
+                session_intervals.append((now_dt - timedelta(seconds=total_s), total_s))
+            else:
+                # Generate 2 to 4 daytime sessions per day across N days
+                # Daytime sessions between 9:00 and 19:00 local-ish time (20 to 90 mins each)
+                num_days = max(1, days)
+                for d in range(num_days - 1, -1, -1):
+                    # Base day anchor: today - d days
+                    day_base = now_dt - timedelta(days=d)
+                    # Create 2 to 4 sessions on this day
+                    # Morning session (around 09:30)
+                    # Midday session (around 13:00)
+                    # Afternoon session (around 16:30)
+                    schedule_hours = [9.5, 13.0, 16.5]
+                    if d == 0:
+                        # For today, only schedule sessions that would end in the past / up to now
+                        for h in schedule_hours:
+                            # Start time today
+                            day_start = day_base.replace(hour=0, minute=0, second=0, microsecond=0)
+                            s_start = day_start + timedelta(hours=h) + timedelta(minutes=random.randint(-15, 15))
+                            dur_s = random.randint(25, 60) * 60
+                            if s_start + timedelta(seconds=dur_s) < now_dt:
+                                session_intervals.append((s_start, dur_s))
+                            elif s_start < now_dt:
+                                cur_dur = int((now_dt - s_start).total_seconds())
+                                if cur_dur > 60:
+                                    session_intervals.append((s_start, cur_dur))
+                        # Always ensure there is a recent session ending right now
+                        recent_dur = min(45 * 60, 3600)
+                        recent_start = now_dt - timedelta(seconds=recent_dur)
+                        # Only add if didn't overlap
+                        if not session_intervals or session_intervals[-1][0] + timedelta(seconds=session_intervals[-1][1]) < recent_start:
+                            session_intervals.append((recent_start, recent_dur))
+                    else:
+                        for h in schedule_hours:
+                            day_start = day_base.replace(hour=0, minute=0, second=0, microsecond=0)
+                            s_start = day_start + timedelta(hours=h) + timedelta(minutes=random.randint(-20, 20))
+                            dur_s = random.randint(30, 80) * 60
+                            session_intervals.append((s_start, dur_s))
+
+            # Baseline parameters
             bend_on_deg = 20.0
             bend_off_deg = 15.0
             vibrate_delay_s = 5.0
             buzzer_delay_s = 15.0
 
-            # State machine tracking
-            current_episode = None
+            hr_baseline = 72.0
+            temp_baseline = 24.5
+            hum_baseline = 52.0
 
-            # Generate cycle of postures (approx 120s per complete cycle)
-            for s in range(total_seconds):
-                t_dt = start_dt + timedelta(seconds=s)
-                t_iso = t_dt.isoformat()
-                cycle_s = s % 120
+            for session_idx, (sess_start, sess_dur) in enumerate(session_intervals):
+                current_episode = None
+                # Vary session posture quality:
+                # Some sessions have frequent slouches, others mostly good posture
+                slouch_prob_mod = 0.8 + 0.5 * (session_idx % 3)
 
-                # 1. Posture state & kinematics
-                if cycle_s < 50:
-                    # Upright standing
-                    is_standing = True
-                    moving = random.random() < 0.12
-                    adxl_tilt = 8.0 + (random.random() - 0.5) * 2.0
-                    imu_pitch = 3.5 + (random.random() - 0.5) * 2.0
-                    state = "UPRIGHT"
-                    bend_duration_ms = 0
+                for s in range(sess_dur):
+                    t_dt = sess_start + timedelta(seconds=s)
+                    t_iso = t_dt.isoformat()
+                    cycle_s = s % 150
 
-                elif cycle_s < 80:
-                    # Forward bend episode (lasts 30s)
-                    is_standing = True
-                    moving = False
-                    bend_elapsed = cycle_s - 50
-                    bend_duration_ms = bend_elapsed * 1000
-
-                    # Ramps up smoothly
-                    progress = min(1.0, bend_elapsed / 12.0)
-                    target_pitch = 20.0 + progress * 7.5 + (random.random() - 0.5) * 1.5
-                    imu_pitch = target_pitch
-                    adxl_tilt = 12.0 + (random.random() - 0.5) * 2.0
-
-                    if bend_elapsed >= buzzer_delay_s:
-                        state = "ALERT"
-                    elif bend_elapsed >= vibrate_delay_s:
-                        state = "WARNING"
-                    else:
+                    # 1. Posture state & kinematics
+                    if cycle_s < 70:
+                        # Upright standing or sitting
+                        is_standing = (s % 300) < 180
+                        moving = random.random() < 0.10
+                        adxl_tilt = 8.0 + (random.random() - 0.5) * 2.0 if is_standing else 45.0
+                        imu_pitch = 3.5 + (random.random() - 0.5) * 2.0
                         state = "UPRIGHT"
+                        bend_duration_ms = 0
 
-                else:
-                    # Sitting posture (40s)
-                    is_standing = False
-                    moving = random.random() < 0.08
-                    adxl_tilt = 84.0 + (random.random() - 0.5) * 2.0
-                    imu_pitch = 6.0 + (random.random() - 0.5) * 2.0
-                    state = "UPRIGHT"
-                    bend_duration_ms = 0
+                    elif cycle_s < 105 and random.random() < (0.9 * slouch_prob_mod):
+                        # Forward bend episode (lasts up to 35s)
+                        is_standing = True
+                        moving = False
+                        bend_elapsed = cycle_s - 70
+                        bend_duration_ms = bend_elapsed * 1000
 
-                # 2. Episode boundaries
-                if state in ("WARNING", "ALERT"):
-                    if current_episode is None:
-                        current_episode = {
-                            "device_id": device_id,
-                            "start_ts": t_iso,
-                            "end_ts": None,
-                            "max_level": state,
-                            "peak_pitch_deg": imu_pitch,
-                            "duration_ms": bend_duration_ms,
-                        }
+                        progress = min(1.0, bend_elapsed / 12.0)
+                        target_pitch = 20.0 + progress * 8.0 + (random.random() - 0.5) * 1.5
+                        imu_pitch = target_pitch
+                        adxl_tilt = 10.0
+
+                        if bend_elapsed >= buzzer_delay_s:
+                            state = "ALERT"
+                        elif bend_elapsed >= vibrate_delay_s:
+                            state = "WARNING"
+                        else:
+                            state = "UPRIGHT"
                     else:
-                        if state == "ALERT":
-                            current_episode["max_level"] = "ALERT"
-                        current_episode["peak_pitch_deg"] = max(current_episode["peak_pitch_deg"], imu_pitch)
-                        current_episode["duration_ms"] = bend_duration_ms
-                else:
-                    if current_episode is not None:
-                        current_episode["end_ts"] = t_iso
-                        episodes.append(current_episode)
-                        current_episode = None
+                        # Sitting upright
+                        is_standing = False
+                        moving = random.random() < 0.08
+                        adxl_tilt = 48.0 + (random.random() - 0.5) * 2.0
+                        imu_pitch = 4.0 + (random.random() - 0.5) * 1.5
+                        state = "UPRIGHT"
+                        bend_duration_ms = 0
 
-                # 3. Environmental DHT11 readings
-                # Temperature drifts +1 C per hour with 0.5 C quantization
-                hour_fraction = s / 3600.0
-                raw_temp = temp_baseline + hour_fraction * 1.1 + (random.random() - 0.5) * 0.3
-                temp_c = round(raw_temp * 2.0) / 2.0  # 0.5 C resolution
+                    # 2. Episode boundaries
+                    if state in ("WARNING", "ALERT"):
+                        if current_episode is None:
+                            current_episode = {
+                                "device_id": device_id,
+                                "start_ts": t_iso,
+                                "end_ts": None,
+                                "max_level": state,
+                                "peak_pitch_deg": imu_pitch,
+                                "duration_ms": bend_duration_ms,
+                            }
+                        else:
+                            if state == "ALERT":
+                                current_episode["max_level"] = "ALERT"
+                            current_episode["peak_pitch_deg"] = max(current_episode["peak_pitch_deg"], imu_pitch)
+                            current_episode["duration_ms"] = bend_duration_ms
+                    else:
+                        if current_episode is not None:
+                            current_episode["end_ts"] = t_iso
+                            episodes.append(current_episode)
+                            current_episode = None
 
-                # Humidity moves slightly opposite with 1% quantization, updated every 5s
-                raw_hum = hum_baseline - hour_fraction * 1.5 + (random.random() - 0.5) * 0.8
-                hum_pct = float(round(raw_hum))
+                    # 3. Environmental DHT11 readings
+                    # Temperature drifts +1 C per hour with 0.5 C quantization
+                    hour_fraction = s / 3600.0
+                    raw_temp = temp_baseline + hour_fraction * 1.1 + (random.random() - 0.5) * 0.3
+                    temp_c = round(raw_temp * 2.0) / 2.0  # 0.5 C resolution
 
-                # 4. Heart Rate dynamics
-                # Base random walk
-                hr_walk = math.sin(s / 60.0) * 2.0 + (random.random() - 0.5) * 2.0
+                    # Humidity moves slightly opposite with 1% quantization, updated every 5s
+                    raw_hum = hum_baseline - hour_fraction * 1.5 + (random.random() - 0.5) * 0.8
+                    hum_pct = float(round(raw_hum))
 
-                if effects:
-                    # With effects:
-                    # +4 to +10 bpm during bends (rising over ~10s)
-                    # -3 to -6 bpm while sitting
-                    posture_hr_offset = 0.0
-                    if cycle_s >= 50 and cycle_s < 80:
-                        bend_time = cycle_s - 50
-                        rise = min(1.0, bend_time / 10.0)
-                        posture_hr_offset = 4.0 + rise * 5.0
-                    elif cycle_s >= 80:
-                        posture_hr_offset = -4.5
+                    # 4. Heart Rate dynamics
+                    # Base random walk
+                    hr_walk = math.sin(s / 60.0) * 2.0 + (random.random() - 0.5) * 2.0
 
-                    # Extra noise if moving
-                    move_noise = (random.random() - 0.5) * 5.0 if moving else 0.0
-                    calculated_hr = int(round(hr_baseline + hr_walk + posture_hr_offset + move_noise))
-                else:
-                    # Without effects (control dataset):
-                    # Heart rate generated completely independent of posture
-                    move_noise = (random.random() - 0.5) * 3.0 if moving else 0.0
-                    calculated_hr = int(round(hr_baseline + hr_walk + move_noise))
+                    if effects:
+                        # With effects:
+                        # +4 to +10 bpm during bends (rising over ~10s)
+                        # -3 to -6 bpm while sitting
+                        posture_hr_offset = 0.0
+                        if cycle_s >= 70 and cycle_s < 105:
+                            bend_time = cycle_s - 70
+                            rise = min(1.0, bend_time / 10.0)
+                            posture_hr_offset = 4.0 + rise * 5.0
+                        elif cycle_s >= 105:
+                            posture_hr_offset = -4.5
 
-                # About 10% null or finger off
-                finger_present = random.random() > 0.10
-                heart_rate_bpm = calculated_hr if finger_present else None
+                        # Extra noise if moving
+                        move_noise = (random.random() - 0.5) * 5.0 if moving else 0.0
+                        calculated_hr = int(round(hr_baseline + hr_walk + posture_hr_offset + move_noise))
+                    else:
+                        # Without effects (control dataset):
+                        # Heart rate generated completely independent of posture
+                        move_noise = (random.random() - 0.5) * 3.0 if moving else 0.0
+                        calculated_hr = int(round(hr_baseline + hr_walk + move_noise))
 
-                # Actuators
-                vib_active = state in ("WARNING", "ALERT")
-                buz_active = state == "ALERT"
-                led_green = state == "UPRIGHT"
-                led_yellow = state == "WARNING"
-                led_red = state == "ALERT"
+                    # About 10% null or finger off
+                    finger_present = random.random() > 0.10
+                    heart_rate_bpm = calculated_hr if finger_present else None
 
-                telemetry_rows.append((
-                    t_iso, device_id, "2.1.0-sim", s, state, 1, 0,
-                    1 if is_standing else 0,
-                    1 if moving else 0,
-                    1 if state in ("WARNING", "ALERT") else 0,
-                    0, bend_duration_ms,
-                    round(imu_pitch, 2), 0.5,
-                    1 if imu_pitch >= bend_on_deg else 0,
-                    None, None, None,
-                    round(adxl_tilt, 2),
-                    1 if vib_active else 0,
-                    1 if buz_active else 0,
-                    1 if led_green else 0,
-                    1 if led_yellow else 0,
-                    1 if led_red else 0,
-                    heart_rate_bpm,
-                    1 if finger_present else 0,
-                    temp_c, hum_pct,
-                    1, 1, 1, 0,
-                    bend_on_deg, bend_off_deg,
-                    vibrate_delay_s, buzzer_delay_s,
-                    -60
-                ))
+                    # Actuators
+                    vib_active = state in ("WARNING", "ALERT")
+                    buz_active = state == "ALERT"
+                    led_green = state == "UPRIGHT"
+                    led_yellow = state == "WARNING"
+                    led_red = state == "ALERT"
+
+                    telemetry_rows.append((
+                        t_iso, device_id, "2.1.0-sim", s, state, 1, 0,
+                        1 if is_standing else 0,
+                        1 if moving else 0,
+                        1 if state in ("WARNING", "ALERT") else 0,
+                        0, bend_duration_ms,
+                        round(imu_pitch, 2), 0.5,
+                        1 if imu_pitch >= bend_on_deg else 0,
+                        None, None, None,
+                        round(adxl_tilt, 2),
+                        1 if vib_active else 0,
+                        1 if buz_active else 0,
+                        1 if led_green else 0,
+                        1 if led_yellow else 0,
+                        1 if led_red else 0,
+                        heart_rate_bpm,
+                        1 if finger_present else 0,
+                        temp_c, hum_pct,
+                        1, 1, 1, 0,
+                        bend_on_deg, bend_off_deg,
+                        vibrate_delay_s, buzzer_delay_s,
+                        -60
+                    ))
 
             # Close dangling episode if any
             if current_episode is not None:
@@ -256,6 +299,7 @@ if __name__ == "__main__":
     args = parse_args()
     generate_seed_data(
         minutes=args.minutes,
+        days=args.days,
         device_id=args.device_id,
         effects=args.effects,
         seed=args.seed,

@@ -322,29 +322,634 @@ def get_history():
         conn.close()
 
 
+
+
 @app.route("/api/episodes", methods=["GET"])
 def get_episodes():
-    """Return recent bend episodes (newest first)."""
+    """
+    Return recent bend episodes (newest first).
+    Supports backward compatibility:
+    - If called without rich query params (just limit or none), returns plain array of episodes.
+    - If called with rich query params (from, to, level, min_duration_s, search=1), returns {total, episodes}.
+    """
+    from_iso = request.args.get("from")
+    to_iso = request.args.get("to")
+    level = request.args.get("level")
+    min_duration_s = request.args.get("min_duration_s")
+    device_id = request.args.get("device_id")
+    order = request.args.get("order", "desc").lower()
+    is_search = request.args.get("search") in ("1", "true") or any([from_iso, to_iso, level, min_duration_s])
+
     try:
-        limit = max(1, min(200, int(request.args.get("limit", 50))))
+        limit = max(1, min(500, int(request.args.get("limit", 50))))
     except ValueError:
-        limit = 50
+        return jsonify({"error": "Invalid 'limit' parameter"}), 400
+
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        return jsonify({"error": "Invalid 'offset' parameter"}), 400
+
+    min_dur_ms = None
+    if min_duration_s is not None:
+        try:
+            min_dur_ms = int(float(min_duration_s) * 1000)
+        except ValueError:
+            return jsonify({"error": "Invalid 'min_duration_s' parameter"}), 400
+
+    if order not in ("asc", "desc"):
+        return jsonify({"error": "Invalid 'order' parameter. Must be 'asc' or 'desc'"}), 400
+
+    if level and level not in ("ALL", "WARNING", "ALERT", "BOTH"):
+        return jsonify({"error": "Invalid 'level' parameter"}), 400
 
     conn = get_db(DB_PATH)
     try:
         check_and_close_timed_out_episodes(conn, max_gap_seconds=10)
         cursor = conn.cursor()
-        cursor.execute(
-            """
+
+        # Build query
+        clauses = []
+        params = []
+
+        if device_id:
+            clauses.append("device_id = ?")
+            params.append(device_id)
+
+        if from_iso:
+            clauses.append("start_ts >= ?")
+            params.append(from_iso)
+
+        if to_iso:
+            clauses.append("start_ts <= ?")
+            params.append(to_iso)
+
+        if level in ("WARNING", "ALERT"):
+            clauses.append("max_level = ?")
+            params.append(level)
+        elif level == "BOTH":
+            clauses.append("max_level IN ('WARNING', 'ALERT')")
+
+        if min_dur_ms is not None:
+            clauses.append("duration_ms >= ?")
+            params.append(min_dur_ms)
+
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        # Total count
+        cursor.execute(f"SELECT COUNT(*) AS total FROM episodes {where_sql}", tuple(params))
+        total_count = cursor.fetchone()["total"]
+
+        # Fetch page
+        order_sql = f"ORDER BY start_ts {order.upper()}"
+        cursor.execute(f"""
             SELECT id, device_id, start_ts, end_ts, max_level, peak_pitch_deg, duration_ms
             FROM episodes
-            ORDER BY id DESC
-            LIMIT ?
-        """,
-            (limit,),
+            {where_sql}
+            {order_sql}
+            LIMIT ? OFFSET ?
+        """, tuple(params + [limit, offset]))
+
+        episodes = [dict(r) for r in cursor.fetchall()]
+
+        if is_search:
+            return jsonify({
+                "total": total_count,
+                "limit": limit,
+                "offset": offset,
+                "episodes": episodes,
+            })
+        else:
+            return jsonify(episodes)
+    finally:
+        conn.close()
+
+
+@app.route("/api/episodes/search", methods=["GET"])
+def search_episodes():
+    """Explicit rich episodes search returning {total, episodes}."""
+    from_iso = request.args.get("from")
+    to_iso = request.args.get("to")
+    level = request.args.get("level")
+    min_duration_s = request.args.get("min_duration_s")
+    device_id = request.args.get("device_id")
+    order = request.args.get("order", "desc").lower()
+
+    try:
+        limit = max(1, min(500, int(request.args.get("limit", 50))))
+    except ValueError:
+        return jsonify({"error": "Invalid 'limit' parameter"}), 400
+
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        return jsonify({"error": "Invalid 'offset' parameter"}), 400
+
+    min_dur_ms = None
+    if min_duration_s is not None:
+        try:
+            min_dur_ms = int(float(min_duration_s) * 1000)
+        except ValueError:
+            return jsonify({"error": "Invalid 'min_duration_s' parameter"}), 400
+
+    if order not in ("asc", "desc"):
+        return jsonify({"error": "Invalid 'order' parameter. Must be 'asc' or 'desc'"}), 400
+
+    if level and level not in ("ALL", "WARNING", "ALERT", "BOTH"):
+        return jsonify({"error": "Invalid 'level' parameter"}), 400
+
+    conn = get_db(DB_PATH)
+    try:
+        check_and_close_timed_out_episodes(conn, max_gap_seconds=10)
+        cursor = conn.cursor()
+
+        clauses = []
+        params = []
+
+        if device_id:
+            clauses.append("device_id = ?")
+            params.append(device_id)
+
+        if from_iso:
+            clauses.append("start_ts >= ?")
+            params.append(from_iso)
+
+        if to_iso:
+            clauses.append("start_ts <= ?")
+            params.append(to_iso)
+
+        if level in ("WARNING", "ALERT"):
+            clauses.append("max_level = ?")
+            params.append(level)
+        elif level == "BOTH":
+            clauses.append("max_level IN ('WARNING', 'ALERT')")
+
+        if min_dur_ms is not None:
+            clauses.append("duration_ms >= ?")
+            params.append(min_dur_ms)
+
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        cursor.execute(f"SELECT COUNT(*) AS total FROM episodes {where_sql}", tuple(params))
+        total_count = cursor.fetchone()["total"]
+
+        order_sql = f"ORDER BY start_ts {order.upper()}"
+        cursor.execute(f"""
+            SELECT id, device_id, start_ts, end_ts, max_level, peak_pitch_deg, duration_ms
+            FROM episodes
+            {where_sql}
+            {order_sql}
+            LIMIT ? OFFSET ?
+        """, tuple(params + [limit, offset]))
+
+        episodes = [dict(r) for r in cursor.fetchall()]
+        return jsonify({
+            "total": total_count,
+            "limit": limit,
+            "offset": offset,
+            "episodes": episodes,
+        })
+    finally:
+        conn.close()
+
+
+@app.route("/api/episodes/<int:ep_id>", methods=["GET"])
+def get_episode_detail(ep_id):
+    """Return single slouch episode with surrounding context series [-60s .. +60s]."""
+    from backend.history_alerts import compute_episode_detail_context
+
+    conn = get_db(DB_PATH)
+    try:
+        detail = compute_episode_detail_context(conn, ep_id, window_seconds=60)
+        if not detail:
+            return jsonify({"error": "Episode not found"}), 404
+        return jsonify(detail)
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# History and Alerts Endpoints
+# ---------------------------------------------------------------------------
+def _parse_common_history_params():
+    """Extract and validate from, to, device_id, tz_offset_minutes."""
+    from_iso = request.args.get("from")
+    to_iso = request.args.get("to")
+    device_id = request.args.get("device_id")
+    tz_str = request.args.get("tz_offset_minutes", "0")
+
+    try:
+        tz_offset_minutes = int(tz_str)
+        if tz_offset_minutes < -840 or tz_offset_minutes > 840:
+            return None, "Invalid tz_offset_minutes (must be between -840 and +840)"
+    except ValueError:
+        return None, "tz_offset_minutes must be an integer"
+
+    # Default to last 24 hours if not specified
+    now = datetime.now(timezone.utc)
+    if not to_iso:
+        to_iso = now.isoformat()
+    if not from_iso:
+        from_iso = (now - timedelta(hours=24)).isoformat()
+
+    return {
+        "from_iso": from_iso,
+        "to_iso": to_iso,
+        "device_id": device_id,
+        "tz_offset_minutes": tz_offset_minutes,
+    }, None
+
+
+@app.route("/api/history/bounds", methods=["GET"])
+def api_history_bounds():
+    """First and last timestamp, device list, and retention setting."""
+    from backend.history_alerts import get_history_bounds
+
+    conn = get_db(DB_PATH)
+    try:
+        bounds = get_history_bounds(conn)
+        return jsonify(bounds)
+    finally:
+        conn.close()
+
+
+@app.route("/api/history/summary", methods=["GET"])
+def api_history_summary():
+    """Summary metrics over time range."""
+    params, err = _parse_common_history_params()
+    if err:
+        return jsonify({"error": err}), 400
+
+    from backend.history_alerts import compute_history_summary, compute_sessions
+
+    conn = get_db(DB_PATH)
+    try:
+        device_id = params["device_id"]
+        cursor = conn.cursor()
+        if not device_id:
+            cursor.execute("SELECT device_id FROM telemetry ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            device_id = row["device_id"] if row and row["device_id"] else "vest-01"
+
+        cursor.execute("""
+            SELECT ts, state, is_standing, heart_rate_bpm, finger_present, temperature_c, humidity_pct
+            FROM telemetry
+            WHERE device_id = ? AND ts >= ? AND ts <= ?
+            ORDER BY ts ASC
+        """, (device_id, params["from_iso"], params["to_iso"]))
+        telemetry_rows = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT id, duration_ms, start_ts, end_ts, max_level
+            FROM episodes
+            WHERE device_id = ? AND start_ts >= ? AND start_ts <= ?
+            ORDER BY start_ts ASC
+        """, (device_id, params["from_iso"], params["to_iso"]))
+        episode_rows = cursor.fetchall()
+
+        # Count continuous sessions
+        sessions = compute_sessions(telemetry_rows, episode_rows, gap_s=60, tz_offset_minutes=params["tz_offset_minutes"])
+        summary = compute_history_summary(telemetry_rows, episode_rows, sessions_count=len(sessions))
+        summary["device_id"] = device_id
+        return jsonify(summary)
+    finally:
+        conn.close()
+
+
+@app.route("/api/history/timeline", methods=["GET"])
+def api_history_timeline():
+    """Downsampled series and run-length-encoded posture segments."""
+    params, err = _parse_common_history_params()
+    if err:
+        return jsonify({"error": err}), 400
+
+    try:
+        max_points = max(10, min(5000, int(request.args.get("max_points", 800))))
+    except ValueError:
+        return jsonify({"error": "Invalid max_points parameter"}), 400
+
+    from backend.history_alerts import compute_posture_segments, compute_timeline_series
+
+    conn = get_db(DB_PATH)
+    try:
+        device_id = params["device_id"]
+        cursor = conn.cursor()
+        if not device_id:
+            cursor.execute("SELECT device_id FROM telemetry ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            device_id = row["device_id"] if row and row["device_id"] else "vest-01"
+
+        cursor.execute("""
+            SELECT ts, imu_pitch_deg, heart_rate_bpm, finger_present, temperature_c, humidity_pct, state, is_standing
+            FROM telemetry
+            WHERE device_id = ? AND ts >= ? AND ts <= ?
+            ORDER BY ts ASC
+        """, (device_id, params["from_iso"], params["to_iso"]))
+        telemetry_rows = cursor.fetchall()
+
+        segments = compute_posture_segments(telemetry_rows, max_gap_s=10)
+        series, resolution_s = compute_timeline_series(telemetry_rows, max_points=max_points)
+
+        return jsonify({
+            "device_id": device_id,
+            "resolution_s": resolution_s,
+            "series": series,
+            "segments": segments,
+            "point_count": len(series),
+        })
+    finally:
+        conn.close()
+
+
+@app.route("/api/history/days", methods=["GET"])
+def api_history_days():
+    """One row per local day in the range."""
+    params, err = _parse_common_history_params()
+    if err:
+        return jsonify({"error": err}), 400
+
+    from backend.history_alerts import compute_local_days, compute_sessions
+
+    conn = get_db(DB_PATH)
+    try:
+        device_id = params["device_id"]
+        cursor = conn.cursor()
+        if not device_id:
+            cursor.execute("SELECT device_id FROM telemetry ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            device_id = row["device_id"] if row and row["device_id"] else "vest-01"
+
+        cursor.execute("""
+            SELECT ts, state, is_standing, heart_rate_bpm, finger_present
+            FROM telemetry
+            WHERE device_id = ? AND ts >= ? AND ts <= ?
+            ORDER BY ts ASC
+        """, (device_id, params["from_iso"], params["to_iso"]))
+        telemetry_rows = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT id, duration_ms, start_ts, end_ts, max_level
+            FROM episodes
+            WHERE device_id = ? AND start_ts >= ? AND start_ts <= ?
+            ORDER BY start_ts ASC
+        """, (device_id, params["from_iso"], params["to_iso"]))
+        episode_rows = cursor.fetchall()
+
+        sessions = compute_sessions(telemetry_rows, episode_rows, gap_s=60, tz_offset_minutes=params["tz_offset_minutes"])
+        days = compute_local_days(telemetry_rows, episode_rows, tz_offset_minutes=params["tz_offset_minutes"], sessions=sessions)
+
+        return jsonify({
+            "device_id": device_id,
+            "tz_offset_minutes": params["tz_offset_minutes"],
+            "days": days,
+        })
+    finally:
+        conn.close()
+
+
+@app.route("/api/sessions", methods=["GET"])
+def api_sessions():
+    """Continuous stretches of monitoring with gap <= gap_s."""
+    params, err = _parse_common_history_params()
+    if err:
+        return jsonify({"error": err}), 400
+
+    try:
+        gap_s = max(10, min(600, int(request.args.get("gap_s", 60))))
+    except ValueError:
+        return jsonify({"error": "Invalid gap_s parameter"}), 400
+
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 50))))
+    except ValueError:
+        return jsonify({"error": "Invalid limit parameter"}), 400
+
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        return jsonify({"error": "Invalid offset parameter"}), 400
+
+    from backend.history_alerts import compute_sessions
+
+    conn = get_db(DB_PATH)
+    try:
+        device_id = params["device_id"]
+        cursor = conn.cursor()
+        if not device_id:
+            cursor.execute("SELECT device_id FROM telemetry ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            device_id = row["device_id"] if row and row["device_id"] else "vest-01"
+
+        cursor.execute("""
+            SELECT ts, state, is_standing, heart_rate_bpm, finger_present
+            FROM telemetry
+            WHERE device_id = ? AND ts >= ? AND ts <= ?
+            ORDER BY ts ASC
+        """, (device_id, params["from_iso"], params["to_iso"]))
+        telemetry_rows = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT id, duration_ms, start_ts, end_ts, max_level
+            FROM episodes
+            WHERE device_id = ? AND start_ts >= ? AND start_ts <= ?
+            ORDER BY start_ts ASC
+        """, (device_id, params["from_iso"], params["to_iso"]))
+        episode_rows = cursor.fetchall()
+
+        all_sessions = compute_sessions(telemetry_rows, episode_rows, gap_s=gap_s, tz_offset_minutes=params["tz_offset_minutes"])
+        total_count = len(all_sessions)
+        paged_sessions = all_sessions[offset : offset + limit]
+
+        return jsonify({
+            "total": total_count,
+            "limit": limit,
+            "offset": offset,
+            "sessions": paged_sessions,
+        })
+    finally:
+        conn.close()
+
+
+@app.route("/api/history/readings", methods=["GET"])
+def api_history_readings():
+    """Raw readings paginated."""
+    params, err = _parse_common_history_params()
+    if err:
+        return jsonify({"error": err}), 400
+
+    try:
+        limit = max(1, min(500, int(request.args.get("limit", 50))))
+    except ValueError:
+        return jsonify({"error": "Invalid limit parameter"}), 400
+
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        return jsonify({"error": "Invalid offset parameter"}), 400
+
+    order = request.args.get("order", "desc").lower()
+    if order not in ("asc", "desc"):
+        return jsonify({"error": "Invalid order parameter (must be 'asc' or 'desc')"}), 400
+
+    from backend.history_alerts import paginate_readings
+
+    conn = get_db(DB_PATH)
+    try:
+        device_id = params["device_id"]
+        cursor = conn.cursor()
+        if not device_id:
+            cursor.execute("SELECT device_id FROM telemetry ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            device_id = row["device_id"] if row and row["device_id"] else "vest-01"
+
+        res = paginate_readings(
+            conn,
+            device_id=device_id,
+            from_iso=params["from_iso"],
+            to_iso=params["to_iso"],
+            tz_offset_minutes=params["tz_offset_minutes"],
+            limit=limit,
+            offset=offset,
+            order=order,
         )
-        rows = [dict(r) for r in cursor.fetchall()]
-        return jsonify(rows)
+        return jsonify(res)
+    finally:
+        conn.close()
+
+
+@app.route("/api/alerts/summary", methods=["GET"])
+def api_alerts_summary():
+    """Summary of slouches for range (counts, longest, 24h hourly bins, per-day)."""
+    params, err = _parse_common_history_params()
+    if err:
+        return jsonify({"error": err}), 400
+
+    from backend.history_alerts import compute_alerts_summary
+
+    conn = get_db(DB_PATH)
+    try:
+        device_id = params["device_id"]
+        cursor = conn.cursor()
+        if not device_id:
+            cursor.execute("SELECT device_id FROM telemetry ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            device_id = row["device_id"] if row and row["device_id"] else "vest-01"
+
+        cursor.execute("""
+            SELECT id, device_id, start_ts, end_ts, max_level, peak_pitch_deg, duration_ms
+            FROM episodes
+            WHERE device_id = ? AND start_ts >= ? AND start_ts <= ?
+            ORDER BY start_ts ASC
+        """, (device_id, params["from_iso"], params["to_iso"]))
+        episode_rows = cursor.fetchall()
+
+        summary = compute_alerts_summary(episode_rows, tz_offset_minutes=params["tz_offset_minutes"])
+        summary["device_id"] = device_id
+        return jsonify(summary)
+    finally:
+        conn.close()
+
+
+@app.route("/api/history/export.csv", methods=["GET"])
+def api_history_export_csv():
+    """Export history readings as CSV with both local and UTC time columns."""
+    params, err = _parse_common_history_params()
+    if err:
+        return jsonify({"error": err}), 400
+
+    resolution = request.args.get("resolution", "auto")
+    if resolution not in ("auto", "1", "5", "60"):
+        return jsonify({"error": "Invalid resolution (must be 'auto', '1', '5', or '60')"}), 400
+
+    from backend.history_alerts import export_history_csv
+
+    conn = get_db(DB_PATH)
+    try:
+        device_id = params["device_id"]
+        cursor = conn.cursor()
+        if not device_id:
+            cursor.execute("SELECT device_id FROM telemetry ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            device_id = row["device_id"] if row and row["device_id"] else "vest-01"
+
+        cursor.execute("""
+            SELECT * FROM telemetry
+            WHERE device_id = ? AND ts >= ? AND ts <= ?
+            ORDER BY ts ASC
+        """, (device_id, params["from_iso"], params["to_iso"]))
+        rows = cursor.fetchall()
+
+        csv_content = export_history_csv(rows, tz_offset_minutes=params["tz_offset_minutes"], resolution=resolution)
+        return Response(
+            csv_content,
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=posture_history_{device_id}.csv"},
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/api/episodes/export.csv", methods=["GET"])
+def api_episodes_export_csv():
+    """Export filtered slouch episodes as CSV."""
+    from_iso = request.args.get("from")
+    to_iso = request.args.get("to")
+    level = request.args.get("level")
+    min_duration_s = request.args.get("min_duration_s")
+    device_id = request.args.get("device_id")
+    order = request.args.get("order", "desc").lower()
+    tz_str = request.args.get("tz_offset_minutes", "0")
+
+    try:
+        tz_offset_minutes = int(tz_str)
+    except ValueError:
+        tz_offset_minutes = 0
+
+    min_dur_ms = None
+    if min_duration_s is not None:
+        try:
+            min_dur_ms = int(float(min_duration_s) * 1000)
+        except ValueError:
+            return jsonify({"error": "Invalid 'min_duration_s' parameter"}), 400
+
+    from backend.history_alerts import export_episodes_csv
+
+    conn = get_db(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        clauses = []
+        params = []
+
+        if device_id:
+            clauses.append("device_id = ?")
+            params.append(device_id)
+        if from_iso:
+            clauses.append("start_ts >= ?")
+            params.append(from_iso)
+        if to_iso:
+            clauses.append("start_ts <= ?")
+            params.append(to_iso)
+        if level in ("WARNING", "ALERT"):
+            clauses.append("max_level = ?")
+            params.append(level)
+        elif level == "BOTH":
+            clauses.append("max_level IN ('WARNING', 'ALERT')")
+        if min_dur_ms is not None:
+            clauses.append("duration_ms >= ?")
+            params.append(min_dur_ms)
+
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        order_sql = f"ORDER BY start_ts {order.upper() if order in ('asc', 'desc') else 'DESC'}"
+
+        cursor.execute(f"SELECT * FROM episodes {where_sql} {order_sql}", tuple(params))
+        episodes = cursor.fetchall()
+
+        csv_content = export_episodes_csv(episodes, tz_offset_minutes=tz_offset_minutes)
+        return Response(
+            csv_content,
+            mimetype="text/csv",
+            headers={"Content-Disposition": "attachment; filename=slouch_alerts.csv"},
+        )
     finally:
         conn.close()
 

@@ -77,6 +77,90 @@ export class ApiClient {
     }
   }
 
+  // --- History Endpoints ---
+
+  async fetchHistoryBounds() {
+    try {
+      const res = await fetch(`${this.baseUrl}/api/history/bounds`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      console.warn("fetchHistoryBounds failed:", err);
+      return null;
+    }
+  }
+
+  async fetchHistorySummary(params = {}) {
+    const qs = this._buildQueryString(params);
+    const res = await fetch(`${this.baseUrl}/api/history/summary?${qs}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async fetchHistoryTimeline(params = {}) {
+    const qs = this._buildQueryString(params);
+    const res = await fetch(`${this.baseUrl}/api/history/timeline?${qs}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async fetchHistoryDays(params = {}) {
+    const qs = this._buildQueryString(params);
+    const res = await fetch(`${this.baseUrl}/api/history/days?${qs}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async fetchSessions(params = {}) {
+    const qs = this._buildQueryString(params);
+    const res = await fetch(`${this.baseUrl}/api/sessions?${qs}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async fetchHistoryReadings(params = {}) {
+    const qs = this._buildQueryString(params);
+    const res = await fetch(`${this.baseUrl}/api/history/readings?${qs}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  // --- Alerts Endpoints ---
+
+  async fetchAlertsSummary(params = {}) {
+    const qs = this._buildQueryString(params);
+    const res = await fetch(`${this.baseUrl}/api/alerts/summary?${qs}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async searchEpisodes(params = {}) {
+    const qs = this._buildQueryString(params);
+    const res = await fetch(`${this.baseUrl}/api/episodes/search?${qs}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async fetchEpisodeDetail(epId) {
+    const res = await fetch(`${this.baseUrl}/api/episodes/${epId}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  _buildQueryString(params) {
+    const searchParams = new URLSearchParams();
+    // Default tz_offset_minutes to local timezone
+    if (!("tz_offset_minutes" in params)) {
+      searchParams.append("tz_offset_minutes", -new Date().getTimezoneOffset());
+    }
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== "") {
+        searchParams.set(k, v);
+      }
+    }
+    return searchParams.toString();
+  }
+
   async sendCommand(commandPayload) {
     const res = await fetch(`${this.baseUrl}/api/commands`, {
       method: "POST",

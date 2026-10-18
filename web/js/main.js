@@ -5,7 +5,8 @@
 import { api } from "./api.js";
 import { store } from "./store.js";
 import { LiveView } from "./views/live.js";
-import { AnalysisView } from "./views/analysis.js";
+import { HistoryView } from "./views/history.js";
+import { AlertsView } from "./views/alerts.js";
 
 class Application {
   constructor() {
@@ -45,6 +46,7 @@ class Application {
       if (liveData) store.setLive(liveData);
       if (historyData) store.setHistory(historyData);
       if (episodesData) store.setEpisodes(episodesData);
+      this._updateAlertsBadge(episodesData);
     } catch (err) {
       console.warn("Initial hydration warning:", err);
     }
@@ -53,12 +55,39 @@ class Application {
     api.startStream();
   }
 
+  _updateAlertsBadge(episodes) {
+    if (!episodes || episodes.length === 0) return;
+    const badgeEl = document.getElementById("nav-alerts-badge");
+    if (!badgeEl) return;
+
+    let lastSeen = null;
+    try {
+      lastSeen = localStorage.getItem("vest_last_seen_alerts");
+    } catch (e) {}
+
+    const lastSeenDt = lastSeen ? new Date(lastSeen) : new Date(0);
+    const unseenCount = episodes.filter(ep => {
+      const epDt = new Date(ep.end_ts || ep.start_ts);
+      return epDt > lastSeenDt;
+    }).length;
+
+    if (unseenCount > 0 && window.location.hash !== "#/alerts") {
+      badgeEl.textContent = unseenCount > 99 ? "99+" : String(unseenCount);
+      badgeEl.classList.remove("hidden");
+    } else {
+      badgeEl.classList.add("hidden");
+    }
+  }
+
   handleRoute() {
-    const hash = window.location.hash || "#/live";
+    const rawHash = window.location.hash || "#/live";
+    const routePath = rawHash.split("?")[0];
 
     // Update navigation active states
     this.navLinks.forEach((link) => {
-      if (link.getAttribute("href") === hash) {
+      const linkHref = link.getAttribute("href") || "";
+      const linkBase = linkHref.split("?")[0];
+      if (linkBase === routePath) {
         link.classList.add("active");
       } else {
         link.classList.remove("active");
@@ -70,13 +99,15 @@ class Application {
       this.currentView.unmount();
     }
 
-    if (hash === "#/analysis") {
+    if (routePath === "#/analysis") {
       this.currentView = new AnalysisView(this.appContainer);
       this.currentView.mount();
-    } else if (hash === "#/history") {
-      this.renderPlaceholder("Historical Analytics", "Detailed posture and vitals history is in active development.");
-    } else if (hash === "#/alerts") {
-      this.renderPlaceholder("Alert History & Audits", "Comprehensive posture episode and alert logs are in active development.");
+    } else if (routePath === "#/history") {
+      this.currentView = new HistoryView(this.appContainer);
+      this.currentView.mount();
+    } else if (routePath === "#/alerts") {
+      this.currentView = new AlertsView(this.appContainer);
+      this.currentView.mount();
     } else {
       // Default to #/live
       this.currentView = new LiveView(this.appContainer);

@@ -18,6 +18,10 @@ class AppStore {
     this.listeners = new Set();
   }
 
+  getState() {
+    return this.state;
+  }
+
   subscribe(callback) {
     this.listeners.add(callback);
     callback(this.state);

@@ -5,6 +5,7 @@
 import { api } from "./api.js";
 import { store } from "./store.js";
 import { LiveView } from "./views/live.js";
+import { AnalysisView } from "./views/analysis.js";
 
 class Application {
   constructor() {
@@ -69,7 +70,10 @@ class Application {
       this.currentView.unmount();
     }
 
-    if (hash === "#/history") {
+    if (hash === "#/analysis") {
+      this.currentView = new AnalysisView(this.appContainer);
+      this.currentView.mount();
+    } else if (hash === "#/history") {
       this.renderPlaceholder("Historical Analytics", "Detailed posture and vitals history is in active development.");
     } else if (hash === "#/alerts") {
       this.renderPlaceholder("Alert History & Audits", "Comprehensive posture episode and alert logs are in active development.");

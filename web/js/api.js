@@ -62,6 +62,21 @@ export class ApiClient {
     }
   }
 
+  async fetchAnalysis(minutes = 60, excludeMoving = 1, deviceId = "") {
+    try {
+      let url = `${this.baseUrl}/api/analysis?minutes=${minutes}&exclude_moving=${excludeMoving ? 1 : 0}`;
+      if (deviceId) {
+        url += `&device_id=${encodeURIComponent(deviceId)}`;
+      }
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      console.warn("fetchAnalysis failed:", err);
+      return null;
+    }
+  }
+
   async sendCommand(commandPayload) {
     const res = await fetch(`${this.baseUrl}/api/commands`, {
       method: "POST",

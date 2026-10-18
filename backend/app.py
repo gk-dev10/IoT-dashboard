@@ -503,6 +503,9 @@ def search_episodes():
         """, tuple(params + [limit, offset]))
 
         episodes = [dict(r) for r in cursor.fetchall()]
+        from backend.history_alerts import compute_episodes_hr_change
+        compute_episodes_hr_change(conn, episodes)
+
         return jsonify({
             "total": total_count,
             "limit": limit,

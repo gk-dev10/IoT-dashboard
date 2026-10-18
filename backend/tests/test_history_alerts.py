@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import pytest
+from backend.db import get_db
 
 TEST_TOKEN = "test-secret-token"
 os.environ["VEST_DEVICE_TOKEN"] = TEST_TOKEN
@@ -129,10 +130,48 @@ def test_history_summary_known_dataset(client_and_db):
     assert d["time_per_category"]["SITTING"] == 20
     assert d["time_per_category"]["WARNING"] == 10
     assert d["time_per_category"]["ALERT"] == 10
-    # Good posture is upright + sitting = 80%
-    assert d["good_posture_percent"] == 80.0
+    # Good posture of standing time: 60 / (60 + 10 + 10) = 75.0%
+    assert d["good_posture_percent"] == 75.0
     assert d["avg_temp_c"] == 22.0
     assert d["avg_hum_pct"] == 45.0
+
+
+def test_history_summary_only_sitting_returns_null_good_posture(client_and_db):
+    client, db_path = client_and_db
+    # 100 samples of sitting only
+    for i in range(100):
+        insert_row(db_path, f"2026-10-18T10:00:{i:02d}+00:00", state="UPRIGHT", is_standing=0)
+
+    resp = client.get("/api/history/summary?from=2026-10-18T09:00:00Z&to=2026-10-18T11:00:00Z")
+    assert resp.status_code == 200
+    d = resp.get_json()
+    assert d["monitored_seconds"] == 100
+    assert d["good_posture_percent"] is None
+
+
+def test_episodes_backward_compatibility(client_and_db):
+    client, db_path = client_and_db
+    conn = get_db(db_path)
+    conn.execute("""
+        INSERT INTO episodes (device_id, start_ts, end_ts, max_level, peak_pitch_deg, duration_ms)
+        VALUES ('vest-01', '2026-10-18T10:00:00+00:00', '2026-10-18T10:00:20+00:00', 'ALERT', 25.0, 20000)
+    """)
+    conn.commit()
+
+    # Call with NO parameters
+    resp = client.get("/api/episodes")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert isinstance(data, list)
+    assert len(data) == 1
+    assert data[0]["max_level"] == "ALERT"
+
+    # Call with ONLY limit parameter
+    resp_limit = client.get("/api/episodes?limit=5")
+    assert resp_limit.status_code == 200
+    data_limit = resp_limit.get_json()
+    assert isinstance(data_limit, list)
+    assert len(data_limit) == 1
 
 
 def test_timezone_handling_days_and_hours(client_and_db):
@@ -253,3 +292,53 @@ def test_invalid_parameters_return_400(client_and_db):
     # Invalid episode level
     resp = client.get("/api/episodes/search?level=SUPER_CRITICAL")
     assert resp.status_code == 400
+
+
+def test_episode_warning_to_alert_lifecycle(client_and_db):
+    """A bend that goes WARNING then ALERT creates exactly one episode with max_level = 'ALERT'."""
+    client, db_path = client_and_db
+    conn = get_db(db_path)
+    from backend.episodes import process_episode_transition
+
+    # 1. Starts UPRIGHT
+    process_episode_transition(conn, "vest-test", "UPRIGHT", 5.0, 0, "2026-10-18T10:00:00+00:00")
+    # 2. Enters WARNING
+    process_episode_transition(conn, "vest-test", "WARNING", 22.0, 5000, "2026-10-18T10:00:05+00:00")
+    # 3. Escalates to ALERT
+    process_episode_transition(conn, "vest-test", "ALERT", 26.0, 15000, "2026-10-18T10:00:15+00:00")
+    # 4. Returns to UPRIGHT (concluding the episode)
+    process_episode_transition(conn, "vest-test", "UPRIGHT", 4.0, 0, "2026-10-18T10:00:20+00:00")
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM episodes WHERE device_id = 'vest-test'")
+    eps = cursor.fetchall()
+    assert len(eps) == 1, "Exactly one episode should be created across WARNING -> ALERT transition"
+    ep = eps[0]
+    assert ep["max_level"] == "ALERT"
+    assert ep["peak_pitch_deg"] == 26.0
+    assert ep["duration_ms"] >= 15000
+
+
+def test_no_overlapping_episodes_and_duration_bounds(client_and_db):
+    """For the same device, no two episodes overlap, and total slouch time <= monitored time."""
+    client, db_path = client_and_db
+    from tools.seed_demo_data import generate_seed_data
+    generate_seed_data(days=2, device_id="sim-vest-01", effects=True, seed=99, clear_sim=True, db_path=db_path)
+
+    conn = get_db(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT e1.id, e1.start_ts, e1.end_ts, e2.id, e2.start_ts, e2.end_ts
+        FROM episodes e1
+        JOIN episodes e2 ON e1.device_id = e2.device_id AND e1.id != e2.id
+        WHERE (e1.start_ts < e2.end_ts AND e1.end_ts > e2.start_ts)
+    """)
+    overlaps = cursor.fetchall()
+    assert len(overlaps) == 0, f"Found overlapping episodes: {overlaps}"
+
+    cursor.execute("SELECT SUM(duration_ms) / 1000.0 FROM episodes WHERE device_id = 'sim-vest-01'")
+    total_slouch_s = cursor.fetchone()[0] or 0.0
+    cursor.execute("SELECT COUNT(*) FROM telemetry WHERE device_id = 'sim-vest-01'")
+    monitored_s = cursor.fetchone()[0] or 0
+
+    assert total_slouch_s <= monitored_s, f"Total slouch time {total_slouch_s}s exceeded monitored time {monitored_s}s"

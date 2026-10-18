@@ -400,7 +400,7 @@ export class AlertsView {
                       <span class="status-pill status-${ep.max_level.toLowerCase()}">${isAlert ? 'Alert' : 'Early warning'}</span>
                     </td>
                     <td>${ep.peak_pitch_deg ? ep.peak_pitch_deg + '°' : '—'}</td>
-                    <td>—</td>
+                    <td>${ep.hr_change !== null && ep.hr_change !== undefined ? (ep.hr_change > 0 ? '+' : '') + ep.hr_change + ' bpm' : '—'}</td>
                     <td>
                       <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.78rem;">Details ›</button>
                     </td>
@@ -447,8 +447,8 @@ export class AlertsView {
     if (this.dayChart) this.dayChart.destroy();
 
     const labels = days.map(d => d.date);
-    const warnData = days.map(d => d.warning_count || 0);
-    const alertData = days.map(d => d.alert_count || 0);
+    const warnData = days.map(d => d.warning ?? d.warning_count ?? 0);
+    const alertData = days.map(d => d.alert ?? d.alert_count ?? 0);
 
     this.dayChart = new Chart(canvas, {
       type: "bar",

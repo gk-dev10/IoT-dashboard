@@ -130,8 +130,14 @@ def compute_history_summary(telemetry_rows, episode_rows, sessions_count=0):
 
     total_valid_cat = sum(cat_counts.values()) or 1
     pct_cat = {c: round((cnt / total_valid_cat) * 100.0, 1) for c, cnt in cat_counts.items()}
-    # Good posture is non-slouching time (UPRIGHT + SITTING) as a fraction of monitored time
-    good_posture_pct = round(((cat_counts["UPRIGHT"] + cat_counts["SITTING"]) / total_valid_cat) * 100.0, 1)
+    # Good posture is strictly calculated as fraction of time spent standing:
+    # UPRIGHT / (UPRIGHT + WARNING + ALERT).
+    # Returns null if standing time < 60 seconds.
+    standing_s = cat_counts["UPRIGHT"] + cat_counts["WARNING"] + cat_counts["ALERT"]
+    if standing_s >= 60:
+        good_posture_pct = round((cat_counts["UPRIGHT"] / standing_s) * 100.0, 1)
+    else:
+        good_posture_pct = None
 
     # Episodes / slouches metrics
     slouch_count = len(episode_rows)
@@ -398,7 +404,11 @@ def compute_local_days(telemetry_rows, episode_rows, tz_offset_minutes=0, sessio
                 cat_counts["UPRIGHT"] += 1
 
         total_cat = sum(cat_counts.values()) or 1
-        pct_good = round((cat_counts["UPRIGHT"] / total_cat) * 100.0, 1)
+        standing_s = cat_counts["UPRIGHT"] + cat_counts["WARNING"] + cat_counts["ALERT"]
+        if standing_s >= 60:
+            pct_good = round((cat_counts["UPRIGHT"] / standing_s) * 100.0, 1)
+        else:
+            pct_good = None
 
         durations_s = [
             round((ep["duration_ms"] or 0) / 1000.0, 1)
@@ -488,7 +498,14 @@ def _build_single_session(chunk, all_episodes):
         1 for r in chunk
         if bool(_get_val(r, "is_standing")) and _get_val(r, "state") not in ("WARNING", "ALERT")
     )
-    good_pct = round((upright_cnt / len(chunk)) * 100.0, 1)
+    standing_cnt = sum(
+        1 for r in chunk
+        if bool(_get_val(r, "is_standing"))
+    )
+    if standing_cnt >= 60:
+        good_pct = round((upright_cnt / standing_cnt) * 100.0, 1)
+    else:
+        good_pct = None
 
     # Find episodes within this session window
     start_ts_iso = start_dt.isoformat()
@@ -555,12 +572,21 @@ def compute_alerts_summary(episode_rows, tz_offset_minutes=0):
 
         day_str = dt_local.strftime("%Y-%m-%d")
         if day_str not in days_map:
-            days_map[day_str] = {"date": day_str, "warning": 0, "alert": 0, "total": 0}
+            days_map[day_str] = {
+                "date": day_str,
+                "warning": 0,
+                "warning_count": 0,
+                "alert": 0,
+                "alert_count": 0,
+                "total": 0,
+            }
         level = _get_val(ep, "max_level") or "WARNING"
         if level == "ALERT":
             days_map[day_str]["alert"] += 1
+            days_map[day_str]["alert_count"] += 1
         else:
             days_map[day_str]["warning"] += 1
+            days_map[day_str]["warning_count"] += 1
         days_map[day_str]["total"] += 1
 
         hour = dt_local.hour
@@ -735,6 +761,65 @@ def paginate_readings(conn, device_id, from_iso, to_iso, tz_offset_minutes=0, li
         "order": order,
         "rows": result_rows,
     }
+
+
+def compute_episodes_hr_change(conn, episodes):
+    """
+    Compute heart rate change for a list of episode dicts.
+    hr_change = mean_hr(during slouch) - mean_hr(baseline 60s before).
+    A row may show a value only when BOTH windows have >= 5 valid heart-rate samples.
+    Otherwise hr_change is None.
+    """
+    cursor = conn.cursor()
+    for ep in episodes:
+        s_dt = parse_iso(ep["start_ts"])
+        e_dt = parse_iso(ep.get("end_ts"))
+        if not s_dt or not e_dt:
+            ep["hr_change"] = None
+            continue
+
+        dev_id = ep.get("device_id")
+        t_base_start = (s_dt - timedelta(seconds=60)).isoformat()
+        t_base_end = s_dt.isoformat()
+        t_during_start = s_dt.isoformat()
+        t_during_end = e_dt.isoformat()
+
+        if dev_id:
+            cursor.execute("""
+                SELECT ts, heart_rate_bpm, finger_present
+                FROM telemetry
+                WHERE device_id = ? AND ts >= ? AND ts <= ?
+                ORDER BY ts ASC
+            """, (dev_id, t_base_start, t_during_end))
+        else:
+            cursor.execute("""
+                SELECT ts, heart_rate_bpm, finger_present
+                FROM telemetry
+                WHERE ts >= ? AND ts <= ?
+                ORDER BY ts ASC
+            """, (t_base_start, t_during_end))
+
+        rows = cursor.fetchall()
+        baseline_hrs = []
+        during_hrs = []
+
+        for r in rows:
+            hr = r["heart_rate_bpm"]
+            fp = bool(r["finger_present"])
+            if hr is not None and fp and 40 <= hr <= 200:
+                ts = r["ts"]
+                if t_base_start <= ts < t_base_end:
+                    baseline_hrs.append(float(hr))
+                elif t_during_start <= ts <= t_during_end:
+                    during_hrs.append(float(hr))
+
+        if len(baseline_hrs) >= 5 and len(during_hrs) >= 5:
+            delta = statistics.mean(during_hrs) - statistics.mean(baseline_hrs)
+            ep["hr_change"] = round(delta, 1)
+        else:
+            ep["hr_change"] = None
+
+    return episodes
 
 
 def export_history_csv(telemetry_rows, tz_offset_minutes=0, resolution="auto"):

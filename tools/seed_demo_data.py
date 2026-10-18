@@ -33,11 +33,12 @@ def parse_args():
     parser.add_argument("--no-effects", dest="effects", action="store_false", help="Generate posture and HR independently (control data)")
     parser.add_argument("--seed", type=int, default=42, help="Random number generator seed")
     parser.add_argument("--clear-sim", action="store_true", help="Delete existing telemetry and episodes for sim- devices")
+    parser.add_argument("--tz-offset-minutes", type=int, default=330, help="Local timezone offset in minutes (default 330 for UTC+5:30)")
     parser.add_argument("--db-path", default=None, help="Database file path override")
     return parser.parse_args()
 
 
-def generate_seed_data(minutes=None, days=1, device_id="sim-vest-01", effects=True, seed=42, clear_sim=False, db_path=None):
+def generate_seed_data(minutes=None, days=1, device_id="sim-vest-01", effects=True, seed=42, clear_sim=False, tz_offset_minutes=330, db_path=None):
     random.seed(seed)
     db = db_path or os.environ.get("VEST_DB_PATH", DEFAULT_DB_PATH)
     init_db(db)
@@ -56,50 +57,44 @@ def generate_seed_data(minutes=None, days=1, device_id="sim-vest-01", effects=Tr
             episodes = []
 
             now_dt = datetime.now(timezone.utc)
+            tz_delta = timedelta(minutes=tz_offset_minutes)
 
             # Determine session intervals: list of (session_start_dt, session_duration_s)
             session_intervals = []
             if minutes is not None:
-                # Single continuous span for the specified minutes
                 total_s = max(60, minutes * 60)
                 session_intervals.append((now_dt - timedelta(seconds=total_s), total_s))
             else:
-                # Generate 2 to 4 daytime sessions per day across N days
-                # Daytime sessions between 9:00 and 19:00 local-ish time (20 to 90 mins each)
                 num_days = max(1, days)
+                local_now = now_dt + tz_delta
+                local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+
                 for d in range(num_days - 1, -1, -1):
-                    # Base day anchor: today - d days
-                    day_base = now_dt - timedelta(days=d)
-                    # Create 2 to 4 sessions on this day
-                    # Morning session (around 09:30)
-                    # Midday session (around 13:00)
-                    # Afternoon session (around 16:30)
+                    day_local_base = local_midnight - timedelta(days=d)
                     schedule_hours = [9.5, 13.0, 16.5]
                     if d == 0:
-                        # For today, only schedule sessions that would end in the past / up to now
+                        # For today, schedule daytime sessions that have already occurred
                         for h in schedule_hours:
-                            # Start time today
-                            day_start = day_base.replace(hour=0, minute=0, second=0, microsecond=0)
-                            s_start = day_start + timedelta(hours=h) + timedelta(minutes=random.randint(-15, 15))
+                            s_start_local = day_local_base + timedelta(hours=h) + timedelta(minutes=random.randint(-15, 15))
                             dur_s = random.randint(25, 60) * 60
-                            if s_start + timedelta(seconds=dur_s) < now_dt:
-                                session_intervals.append((s_start, dur_s))
-                            elif s_start < now_dt:
-                                cur_dur = int((now_dt - s_start).total_seconds())
+                            s_start_utc = s_start_local - tz_delta
+                            if s_start_utc + timedelta(seconds=dur_s) < now_dt:
+                                session_intervals.append((s_start_utc, dur_s))
+                            elif s_start_utc < now_dt:
+                                cur_dur = int((now_dt - s_start_utc).total_seconds())
                                 if cur_dur > 60:
-                                    session_intervals.append((s_start, cur_dur))
+                                    session_intervals.append((s_start_utc, cur_dur))
                         # Always ensure there is a recent session ending right now
                         recent_dur = min(45 * 60, 3600)
                         recent_start = now_dt - timedelta(seconds=recent_dur)
-                        # Only add if didn't overlap
                         if not session_intervals or session_intervals[-1][0] + timedelta(seconds=session_intervals[-1][1]) < recent_start:
                             session_intervals.append((recent_start, recent_dur))
                     else:
                         for h in schedule_hours:
-                            day_start = day_base.replace(hour=0, minute=0, second=0, microsecond=0)
-                            s_start = day_start + timedelta(hours=h) + timedelta(minutes=random.randint(-20, 20))
+                            s_start_local = day_local_base + timedelta(hours=h) + timedelta(minutes=random.randint(-20, 20))
                             dur_s = random.randint(30, 80) * 60
-                            session_intervals.append((s_start, dur_s))
+                            s_start_utc = s_start_local - tz_delta
+                            session_intervals.append((s_start_utc, dur_s))
 
             # Baseline parameters
             bend_on_deg = 20.0
@@ -113,17 +108,20 @@ def generate_seed_data(minutes=None, days=1, device_id="sim-vest-01", effects=Tr
 
             for session_idx, (sess_start, sess_dur) in enumerate(session_intervals):
                 current_episode = None
-                # Vary session posture quality:
-                # Some sessions have frequent slouches, others mostly good posture
                 slouch_prob_mod = 0.8 + 0.5 * (session_idx % 3)
 
                 for s in range(sess_dur):
                     t_dt = sess_start + timedelta(seconds=s)
                     t_iso = t_dt.isoformat()
                     cycle_s = s % 150
+                    cycle_idx = s // 150
+
+                    # Deterministically decide whether this cycle has a slouch event
+                    # This prevents random per-second flickering between states
+                    has_slouch = (((cycle_idx * 17 + session_idx * 11) % 100) / 100.0) < (0.85 * slouch_prob_mod)
 
                     # 1. Posture state & kinematics
-                    if cycle_s < 70:
+                    if cycle_s < 70 or not has_slouch:
                         # Upright standing or sitting
                         is_standing = (s % 300) < 180
                         moving = random.random() < 0.10
@@ -132,24 +130,37 @@ def generate_seed_data(minutes=None, days=1, device_id="sim-vest-01", effects=Tr
                         state = "UPRIGHT"
                         bend_duration_ms = 0
 
-                    elif cycle_s < 105 and random.random() < (0.9 * slouch_prob_mod):
-                        # Forward bend episode (lasts up to 35s)
-                        is_standing = True
-                        moving = False
+                    elif cycle_s < 105:
+                        # Determine slouch duration for this cycle:
+                        # Short warning slouch (duration 10s: corrected before buzzer) vs long alert slouch (duration 35s)
+                        is_short_slouch = (cycle_idx % 3) == 0
+                        slouch_max_dur = 11 if is_short_slouch else 35
                         bend_elapsed = cycle_s - 70
-                        bend_duration_ms = bend_elapsed * 1000
 
-                        progress = min(1.0, bend_elapsed / 12.0)
-                        target_pitch = 20.0 + progress * 8.0 + (random.random() - 0.5) * 1.5
-                        imu_pitch = target_pitch
-                        adxl_tilt = 10.0
+                        if bend_elapsed < slouch_max_dur:
+                            is_standing = True
+                            moving = False
+                            bend_duration_ms = bend_elapsed * 1000
 
-                        if bend_elapsed >= buzzer_delay_s:
-                            state = "ALERT"
-                        elif bend_elapsed >= vibrate_delay_s:
-                            state = "WARNING"
+                            progress = min(1.0, bend_elapsed / 12.0)
+                            target_pitch = 20.0 + progress * 8.0 + (random.random() - 0.5) * 1.5
+                            imu_pitch = target_pitch
+                            adxl_tilt = 10.0
+
+                            if bend_elapsed >= buzzer_delay_s:
+                                state = "ALERT"
+                            elif bend_elapsed >= vibrate_delay_s:
+                                state = "WARNING"
+                            else:
+                                state = "UPRIGHT"
                         else:
+                            # Promptly straightened up!
+                            is_standing = True
+                            moving = False
+                            imu_pitch = 3.5 + (random.random() - 0.5) * 1.5
+                            adxl_tilt = 8.0
                             state = "UPRIGHT"
+                            bend_duration_ms = 0
                     else:
                         # Sitting upright
                         is_standing = False
@@ -251,10 +262,11 @@ def generate_seed_data(minutes=None, days=1, device_id="sim-vest-01", effects=Tr
                         -60
                     ))
 
-            # Close dangling episode if any
-            if current_episode is not None:
-                current_episode["end_ts"] = now_dt.isoformat()
-                episodes.append(current_episode)
+                # Close dangling episode if session ended while bent
+                if current_episode is not None:
+                    current_episode["end_ts"] = t_iso
+                    episodes.append(current_episode)
+                    current_episode = None
 
             # Insert batch telemetry
             conn.executemany("""
@@ -304,5 +316,6 @@ if __name__ == "__main__":
         effects=args.effects,
         seed=args.seed,
         clear_sim=args.clear_sim,
+        tz_offset_minutes=args.tz_offset_minutes,
         db_path=args.db_path,
     )

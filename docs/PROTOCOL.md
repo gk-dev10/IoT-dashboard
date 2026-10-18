@@ -115,10 +115,10 @@ This document serves as the single source of truth for communication between the
 
 ### History Endpoints:
 - `GET /api/history/bounds`: Returns overall first and last timestamps, device list with simulated flags, and retention setting (`7` days).
-- `GET /api/history/summary`: Accepts `from`, `to`, `device_id`, `tz_offset_minutes`. Returns monitored time, percent per category, slouch count, longest slouch, average heart rate, temperature, humidity, and session count. Returns `null` if fewer than 12 samples (< 60s) exist.
+- `GET /api/history/summary`: Accepts `from`, `to`, `device_id`, `tz_offset_minutes`. Returns monitored time, percent per category, slouch count, longest slouch, average heart rate, temperature, humidity, and session count. `good_posture_percent` is UPRIGHT seconds divided by UPRIGHT + WARNING + ALERT seconds; sitting is excluded and reported separately. It is `null` when standing time is under 60 seconds (or the summary has fewer than 12 samples).
 - `GET /api/history/timeline`: Returns downsampled series (max `max_points`, default 800) preserving highest severity category (`ALERT` > `WARNING` > `SITTING` > `UPRIGHT`), plus run-length-encoded `segments` list (`[{start, end, cat}]`). Never interpolates across gaps > 10s.
-- `GET /api/history/days`: Returns one record per local day according to `tz_offset_minutes`, including monitored duration, percent good posture, slouch count, longest slouch, and average heart rate.
-- `GET /api/sessions`: Continuous stretches of monitoring where reading gap <= `gap_s` (default 60). Newest first with `limit` and `offset`.
+- `GET /api/history/days`: Returns one record per local day according to `tz_offset_minutes`, including monitored duration, standing-only good posture percent (same formula and null threshold as summary), sitting's separate share in `posture_share`, slouch count, longest slouch, and average heart rate.
+- `GET /api/sessions`: Continuous stretches of monitoring where reading gap <= `gap_s` (default 60). Newest first with `limit` and `offset`. Each session's good posture percent uses standing time only and is `null` with under 60 standing seconds; `sitting_percent` reports sitting separately as a share of that session.
 - `GET /api/history/readings`: Raw readings table paginated (`limit`, `offset`, `order`).
 - `GET /api/history/export.csv`: CSV export of time range with both local time and UTC time columns (`resolution`: `auto`, `1`, `5`, `60`).
 

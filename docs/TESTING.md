@@ -163,7 +163,8 @@ Open `http://localhost:5000/#/history`:
 2. **Simulated Data Banner:**
    - If device is `sim-vest-01`, yellow `SIMULATED DATA` banner is visible.
 3. **Summary Metric Cards:**
-   - Cards display: *Monitored time*, *Good posture %*, *Slouches*, *Longest slouch*, *Time sitting*, *Average heart rate*.
+   - Cards display: *Monitored time*, *Good posture (while standing)*, *Slouches*, *Longest slouch*, *Time sitting*, *Average heart rate*.
+   - Good posture is UPRIGHT seconds ÷ (UPRIGHT + WARNING + ALERT seconds); sitting is shown separately. The value is unavailable (`null`) when standing time is under 60 seconds.
    - If range has < 12 samples, cards display *"Not enough data yet"*.
 4. **Posture Timeline Canvas:**
    - Color-coded horizontal strip renders run-length-encoded segments (green upright, blue-grey sitting, yellow warning, red alert).

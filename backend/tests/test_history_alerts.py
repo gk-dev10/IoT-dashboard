@@ -113,14 +113,15 @@ def test_history_summary_insufficient_data(client_and_db):
 def test_history_summary_known_dataset(client_and_db):
     client, db_path = client_and_db
     # Insert 60 upright, 20 sitting, 10 warning, 10 alert = 100 samples
+    start = datetime(2026, 10, 18, 10, 0, tzinfo=timezone.utc)
     for i in range(60):
-        insert_row(db_path, f"2026-10-18T10:00:{i:02d}+00:00", state="UPRIGHT", is_standing=1, hr=70.0, temp=22.0, hum=45.0)
+        insert_row(db_path, (start + timedelta(seconds=i)).isoformat(), state="UPRIGHT", is_standing=1, hr=70.0, temp=22.0, hum=45.0)
     for i in range(20):
-        insert_row(db_path, f"2026-10-18T10:01:{i:02d}+00:00", state="UPRIGHT", is_standing=0, hr=65.0, temp=22.0, hum=45.0)
+        insert_row(db_path, (start + timedelta(seconds=60 + i)).isoformat(), state="UPRIGHT", is_standing=0, hr=65.0, temp=22.0, hum=45.0)
     for i in range(10):
-        insert_row(db_path, f"2026-10-18T10:01:{20+i:02d}+00:00", state="WARNING", is_standing=1, hr=80.0, temp=22.0, hum=45.0)
+        insert_row(db_path, (start + timedelta(seconds=80 + i)).isoformat(), state="WARNING", is_standing=1, hr=80.0, temp=22.0, hum=45.0)
     for i in range(10):
-        insert_row(db_path, f"2026-10-18T10:01:{30+i:02d}+00:00", state="ALERT", is_standing=1, hr=85.0, temp=22.0, hum=45.0)
+        insert_row(db_path, (start + timedelta(seconds=90 + i)).isoformat(), state="ALERT", is_standing=1, hr=85.0, temp=22.0, hum=45.0)
 
     resp = client.get("/api/history/summary?from=2026-10-18T09:00:00Z&to=2026-10-18T11:00:00Z")
     assert resp.status_code == 200
@@ -135,18 +136,37 @@ def test_history_summary_known_dataset(client_and_db):
     assert d["avg_temp_c"] == 22.0
     assert d["avg_hum_pct"] == 45.0
 
+    days = client.get("/api/history/days?from=2026-10-18T09:00:00Z&to=2026-10-18T11:00:00Z").get_json()["days"]
+    assert days[0]["good_posture_percent"] == 75.0
+    assert days[0]["posture_share"]["SITTING"] == 20.0
+
+    sessions = client.get("/api/sessions?from=2026-10-18T09:00:00Z&to=2026-10-18T11:00:00Z").get_json()["sessions"]
+    assert len(sessions) == 1
+    assert sessions[0]["good_posture_percent"] == 75.0
+    assert sessions[0]["sitting_percent"] == 20.0
+
 
 def test_history_summary_only_sitting_returns_null_good_posture(client_and_db):
     client, db_path = client_and_db
     # 100 samples of sitting only
+    start = datetime(2026, 10, 18, 10, 0, tzinfo=timezone.utc)
     for i in range(100):
-        insert_row(db_path, f"2026-10-18T10:00:{i:02d}+00:00", state="UPRIGHT", is_standing=0)
+        insert_row(db_path, (start + timedelta(seconds=i)).isoformat(), state="UPRIGHT", is_standing=0)
 
     resp = client.get("/api/history/summary?from=2026-10-18T09:00:00Z&to=2026-10-18T11:00:00Z")
     assert resp.status_code == 200
     d = resp.get_json()
     assert d["monitored_seconds"] == 100
     assert d["good_posture_percent"] is None
+
+    days = client.get("/api/history/days?from=2026-10-18T09:00:00Z&to=2026-10-18T11:00:00Z").get_json()["days"]
+    assert days[0]["good_posture_percent"] is None
+    assert days[0]["posture_share"]["SITTING"] == 100.0
+
+    sessions = client.get("/api/sessions?from=2026-10-18T09:00:00Z&to=2026-10-18T11:00:00Z").get_json()["sessions"]
+    assert len(sessions) == 1
+    assert sessions[0]["good_posture_percent"] is None
+    assert sessions[0]["sitting_percent"] == 100.0
 
 
 def test_episodes_backward_compatibility(client_and_db):

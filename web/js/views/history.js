@@ -5,7 +5,7 @@
  * - Range pills (Today, Yesterday, Last 7 days, All available) + custom From/To datetime-local picker
  * - Persistent URL hash parameters (#/history?from=...&to=...&device_id=...)
  * - Simulated data banner
- * - Summary cards row (Monitored time, Good posture %, Slouches, Longest slouch, Time sitting, Avg HR)
+ * - Summary cards row (Monitored time, Good posture while standing, Slouches, Longest slouch, Time sitting, Avg HR)
  * - Hero Posture Timeline strip: RLE colored segments with hover tooltip, drag-zoom, reset zoom, and vitals toggle
  * - Day by day breakdown (clicking a day sets range to that day)
  * - Sessions list (continuous stretches of data, clicking a session sets range to that session)
@@ -413,7 +413,8 @@ export class HistoryView {
                   <div style="width: ${d.posture_share?.WARNING || 0}%; background: var(--color-yellow);"></div>
                   <div style="width: ${d.posture_share?.ALERT || 0}%; background: var(--color-red);"></div>
                 </div>
-                <div style="font-size: 0.72rem; color: var(--text-faint); margin-top: 0.2rem;">${d.good_posture_percent}% good posture</div>
+                <div style="font-size: 0.72rem; color: var(--text-faint); margin-top: 0.2rem;">${fmtVal(d.good_posture_percent, "%")} good posture while standing</div>
+                <div style="font-size: 0.72rem; color: var(--text-faint);">Sitting: ${fmtVal(d.posture_share?.SITTING, "%")} of monitored time</div>
               </div>
               <div style="font-size: 0.88rem; color: var(--text-main);">${d.slouch_count} slouches</div>
               <div style="font-size: 0.88rem; color: var(--text-muted);">${d.longest_slouch_s ? d.longest_slouch_s + 's peak' : '—'}</div>
@@ -441,7 +442,8 @@ export class HistoryView {
                   </div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 1.5rem; font-size: 0.88rem;">
-                  <div><span style="color: var(--text-muted);">Good posture:</span> <strong style="color: var(--color-green);">${s.good_posture_percent}%</strong></div>
+                  <div><span style="color: var(--text-muted);">Good posture (while standing):</span> <strong style="color: var(--color-green);">${fmtVal(s.good_posture_percent, "%")}</strong></div>
+                  <div><span style="color: var(--text-muted);">Sitting:</span> <strong>${fmtVal(s.sitting_percent, "%")}</strong></div>
                   <div><span style="color: var(--text-muted);">Slouches:</span> <strong>${s.slouch_count}</strong></div>
                   <div><span style="color: var(--text-muted);">Heart rate:</span> <strong>${s.avg_heart_rate_bpm ? s.avg_heart_rate_bpm + ' bpm' : '—'}</strong></div>
                 </div>

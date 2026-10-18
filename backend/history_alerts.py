@@ -47,6 +47,14 @@ def parse_iso(ts_str):
         return None
 
 
+def _good_posture_percent(upright_seconds, warning_seconds, alert_seconds):
+    """Return upright share of standing posture time, or None below 60 standing seconds."""
+    standing_seconds = upright_seconds + warning_seconds + alert_seconds
+    if standing_seconds < 60:
+        return None
+    return round((upright_seconds / standing_seconds) * 100.0, 1)
+
+
 def to_local_iso(dt_utc, tz_offset_minutes=0):
     """Convert UTC datetime to local ISO string with offset."""
     if not dt_utc:
@@ -130,14 +138,10 @@ def compute_history_summary(telemetry_rows, episode_rows, sessions_count=0):
 
     total_valid_cat = sum(cat_counts.values()) or 1
     pct_cat = {c: round((cnt / total_valid_cat) * 100.0, 1) for c, cnt in cat_counts.items()}
-    # Good posture is strictly calculated as fraction of time spent standing:
-    # UPRIGHT / (UPRIGHT + WARNING + ALERT).
-    # Returns null if standing time < 60 seconds.
-    standing_s = cat_counts["UPRIGHT"] + cat_counts["WARNING"] + cat_counts["ALERT"]
-    if standing_s >= 60:
-        good_posture_pct = round((cat_counts["UPRIGHT"] / standing_s) * 100.0, 1)
-    else:
-        good_posture_pct = None
+    # Sitting is intentionally excluded from the standing-only posture score.
+    good_posture_pct = _good_posture_percent(
+        cat_counts["UPRIGHT"], cat_counts["WARNING"], cat_counts["ALERT"]
+    )
 
     # Episodes / slouches metrics
     slouch_count = len(episode_rows)
@@ -404,11 +408,9 @@ def compute_local_days(telemetry_rows, episode_rows, tz_offset_minutes=0, sessio
                 cat_counts["UPRIGHT"] += 1
 
         total_cat = sum(cat_counts.values()) or 1
-        standing_s = cat_counts["UPRIGHT"] + cat_counts["WARNING"] + cat_counts["ALERT"]
-        if standing_s >= 60:
-            pct_good = round((cat_counts["UPRIGHT"] / standing_s) * 100.0, 1)
-        else:
-            pct_good = None
+        pct_good = _good_posture_percent(
+            cat_counts["UPRIGHT"], cat_counts["WARNING"], cat_counts["ALERT"]
+        )
 
         durations_s = [
             round((ep["duration_ms"] or 0) / 1000.0, 1)
@@ -498,14 +500,15 @@ def _build_single_session(chunk, all_episodes):
         1 for r in chunk
         if bool(_get_val(r, "is_standing")) and _get_val(r, "state") not in ("WARNING", "ALERT")
     )
-    standing_cnt = sum(
+    warning_cnt = sum(
         1 for r in chunk
-        if bool(_get_val(r, "is_standing"))
+        if bool(_get_val(r, "is_standing")) and _get_val(r, "state") == "WARNING"
     )
-    if standing_cnt >= 60:
-        good_pct = round((upright_cnt / standing_cnt) * 100.0, 1)
-    else:
-        good_pct = None
+    alert_cnt = sum(
+        1 for r in chunk
+        if bool(_get_val(r, "is_standing")) and _get_val(r, "state") == "ALERT"
+    )
+    good_pct = _good_posture_percent(upright_cnt, warning_cnt, alert_cnt)
 
     # Find episodes within this session window
     start_ts_iso = start_dt.isoformat()
@@ -531,6 +534,7 @@ def _build_single_session(chunk, all_episodes):
         "duration_s": dur_s,
         "duration_text": f"{dur_s // 60} min" if dur_s >= 60 else f"{dur_s}s",
         "good_posture_percent": good_pct,
+        "sitting_percent": round((sum(1 for r in chunk if not bool(_get_val(r, "is_standing"))) / len(chunk)) * 100.0, 1),
         "slouch_count": len(sess_eps),
         "avg_heart_rate_bpm": avg_hr,
     }

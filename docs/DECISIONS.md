@@ -34,3 +34,11 @@ This document records technical decisions and trade-offs made during the impleme
 - Route `/` serves `web/index.html`.
 - Static files under `web/` served at root or `/static/` as appropriate.
 - Old endpoints (`/api/status`, `/api/history`, `/api/stats`, `/api/alerts`) are preserved with lightweight adapters querying the new database so existing integrations or tools remain functional where possible.
+
+## 5. History and Alerts Architecture Decisions
+- **Timezone Handling:** Telemetry timestamps in SQLite are UTC ISO-8601. Days and 24-hour distribution bins are strictly computed in the viewer's local timezone using the client's `tz_offset_minutes` (`new Date().getTimezoneOffset() * -1`). Grouping is never performed on UTC days in SQL directly.
+- **Monitoring Session Gap:** A session is defined as continuous monitoring with data gaps `<= 60 seconds`. Any gap longer than 60s splits the stream into a separate monitoring session.
+- **Timeline Downsampling & Segments:** Downsampling preserves severity order (`ALERT` > `WARNING` > `SITTING` > `UPRIGHT`) within each downsample bucket. Gaps greater than 10 seconds are never interpolated across and remain empty on the timeline canvas.
+- **Data Retention & Rollup Table:** Raw telemetry retention is configured via `VEST_RETENTION_DAYS` (default 7 days). The UI honestly communicates this ("History goes back 7 days"). For multi-day analysis, 7 days provides over 600,000 raw samples at 1 Hz, which the parameterized SQLite indexed queries execute in under 40 ms. The optional 90-day per-minute rollup table was deferred as raw retention satisfies the 7-day requirement with sub-50ms performance.
+- **Plain Language Terminology:** Wording across the platform uses plain human language: "Slouches" instead of "episodes", "Lean angle" instead of "IMU pitch", "Temperature near body", and "Heart rate". Technical parameters (raw angles, roll angles, ADXL tilt, sensor flags) are placed in collapsible expanders.
+

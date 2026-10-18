@@ -145,3 +145,72 @@ Open your browser to `http://localhost:5000`.
    - Click **"Test Buzzer"**. Button disables for 2.5s. Simulator prints `[COMMAND RECEIVED] test: buzzer` and activates buzzer for 2s.
    - Click **"Test Vibration"**. Simulator activates vibration for 2s.
    - Click **"Test LEDs"**. Simulator lights green, yellow, and red LEDs for 2s.
+
+---
+
+## 4. History Page (`#/history`) Manual Checklist
+
+Seed multi-day demo data first:
+```powershell
+python tools/seed_demo_data.py --days 3 --effects --clear-sim
+```
+Open `http://localhost:5000/#/history`:
+
+1. **Range Pills & Custom Picker:**
+   - Click **"Today"**, **"Yesterday"**, **"Last 7 days"**, **"All available"**. URL hash updates (`#/history?from=...&to=...`).
+   - Pick dates with the `datetime-local` inputs and click **"Apply"**. Range reloads accordingly.
+   - Refresh page: selected range persists from the URL hash.
+2. **Simulated Data Banner:**
+   - If device is `sim-vest-01`, yellow `SIMULATED DATA` banner is visible.
+3. **Summary Metric Cards:**
+   - Cards display: *Monitored time*, *Good posture %*, *Slouches*, *Longest slouch*, *Time sitting*, *Average heart rate*.
+   - If range has < 12 samples, cards display *"Not enough data yet"*.
+4. **Posture Timeline Canvas:**
+   - Color-coded horizontal strip renders run-length-encoded segments (green upright, blue-grey sitting, yellow warning, red alert).
+   - Hovering displays timestamp and category in a tooltip.
+   - Click and drag across a section: zooms in; *"Reset zoom"* button appears and restores the range when clicked.
+   - Toggle **"Show vitals"**: displays time-aligned lean angle, heart rate, and temperature line chart directly underneath.
+5. **Day by Day Breakdown:**
+   - List of cards per calendar day with date, duration, posture proportion bar, slouch count, longest slouch, and average heart rate.
+   - Clicking a day sets the active range to that day.
+6. **Monitoring Sessions:**
+   - List of sessions split by gaps > 60s.
+   - Clicking a session card zooms the range to that session.
+7. **Raw Telemetry Table:**
+   - Click **"Show raw readings"** to expand table.
+   - Toggle order (`ASC`/`DESC`).
+   - Click pagination (`‹` / `›`).
+   - Toggle **"Show technical sensor columns"** to view side lean, thigh tilt, and sensor flags.
+8. **CSV Download:**
+   - Click **"Download CSV"**: downloads `posture_history_sim-vest-01.csv` with both local and UTC time columns.
+
+---
+
+## 5. Alerts Page (`#/alerts`) Manual Checklist
+
+Open `http://localhost:5000/#/alerts`:
+
+1. **Live Alert Banner:**
+   - Start the simulator in demo mode: `python tools/simulate_vest.py --scenario demo`.
+   - When a bend begins (warning / alert), top banner appears: *"Alert in progress — leaning forward for X s"*.
+   - When posture returns to upright, banner disappears without full page reload.
+2. **Filter Controls:**
+   - Filter by Level (**"All levels"**, **"Early warnings"**, **"Alerts"**).
+   - Filter by Minimum Length (**"Any length"**, **"≥ 10s"**, **"≥ 30s"**, **"≥ 60s"**).
+   - Slouch log updates in place.
+3. **Summary Cards & Charts:**
+   - Displays *Total Slouches*, *Early warnings*, *Alerts*, *Longest slouch*, *Average length*, *Most common time* (e.g. "3 pm to 4 pm").
+   - *Slouches by day* (stacked bar chart) and *Slouches by hour of day* (24 local hourly bins) render cleanly.
+4. **Slouch Log & Detail Modal:**
+   - List shows local start time, length, level pill, peak lean angle, and Details button.
+   - Click any slouch row: modal opens displaying:
+     - Moments timeline (`0s started`, `+5s early warning`, `+15s alert`, `+Xs ended`).
+     - Mini chart spanning 60s before start to 60s after end with threshold lines and heart rate axis.
+     - Technical details collapsible expander.
+   - Close button or clicking overlay closes modal.
+5. **Unseen Alerts Badge:**
+   - Nav bar `Alerts` tab shows a red counter badge when new slouches have completed since the last visit.
+   - Opening `#/alerts` clears the badge and stores the timestamp in `localStorage`.
+6. **CSV Download:**
+   - Click **"Download CSV"**: downloads filtered slouch records.
+

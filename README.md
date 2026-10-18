@@ -89,14 +89,42 @@ The simulator receives commands from the server in real time:
 
 ---
 
-## 4. Running Automated Tests
+## 4. Seeding Demo Data
+
+You can seed synthetic multi-day posture, physiological, and alert data directly into the SQLite database:
+
+```powershell
+# Seed 3 days of realistic daytime sessions with posture effects on heart rate
+python tools/seed_demo_data.py --days 3 --effects --clear-sim
+
+# Or seed a specific duration in minutes without posture effects (control data)
+python tools/seed_demo_data.py --minutes 120 --no-effects --clear-sim
+```
+
+### Available Seed Arguments:
+- `--days N`: Number of days of daytime monitoring sessions (default: 1).
+- `--minutes N`: Total minutes of continuous recording (overrides `--days`).
+- `--effects / --no-effects`: Simulate posture impact on heart rate.
+- `--clear-sim`: Clean existing data for `sim-` devices before seeding.
+- `--device-id`: Device ID to assign (default: `sim-vest-01`).
+
+---
+
+## 5. Web Platform Pages
+
+- **Live View (`#/live`)**: Real-time biofeedback display, 3D body orientation visualizer, heart rate monitor, temperature & humidity, and bidirectional device command control (calibrate, mute, buzzer/vib test, angle thresholds).
+- **Analysis (`#/analysis`)**: Posture versus heart rate, ambient temperature, and humidity correlation analysis with scatter plots, posture time-share, and event-aligned average response.
+- **History (`#/history`)**: Historical monitoring review across custom ranges or presets (Today, Yesterday, Last 7 days, All available). Features a horizontal hero timeline strip with drag-to-zoom and vitals overlay, summary metrics, day-by-day aggregates, continuous monitoring sessions, paginated raw readings table, and CSV export.
+- **Alerts (`#/alerts`)**: Log and audit of every posture warning and slouch alert. Features real-time live alert banner during ongoing slouches, summary cards, two charts (slouches by day and by hour of day in viewer local timezone), slouch log table, context drawer with [-60s .. +60s] surrounding readings chart and trigger moments, and CSV export.
+
+---
+
+## 6. Running Automated Tests
 
 Run the test suite with `pytest`:
 ```powershell
 python -m pytest backend/tests/ -v
 ```
-
----
 
 ## 5. Environment Variables
 

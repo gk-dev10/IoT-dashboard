@@ -418,6 +418,162 @@ def get_stats():
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Analysis Endpoints with in-memory cache
+# ---------------------------------------------------------------------------
+_analysis_cache = {}
+
+@app.route("/api/analysis", methods=["GET"])
+def get_analysis():
+    """
+    Comprehensive posture vs physiological & environmental analysis.
+    Query params:
+      minutes: int (allowed 5, 15, 60, 360, 1440, or 0 for everything)
+      exclude_moving: int/bool (default 1)
+      device_id: str (optional, defaults to device with most recent data)
+    """
+    raw_min = request.args.get("minutes", "60")
+    try:
+        minutes = int(raw_min)
+    except ValueError:
+        return jsonify({"error": "Invalid 'minutes' parameter"}), 400
+
+    if minutes not in (5, 15, 60, 360, 1440, 0):
+        return jsonify({"error": "Allowed minutes values are 5, 15, 60, 360, 1440, or 0 (all)"}), 400
+
+    exclude_moving = request.args.get("exclude_moving", "1").lower() in ("1", "true", "yes")
+    device_id = request.args.get("device_id")
+
+    # In-memory cache check (5s TTL)
+    now_epoch = datetime.now(timezone.utc).timestamp()
+    cache_key = (minutes, exclude_moving, device_id)
+    if cache_key in _analysis_cache:
+        cached_ts, cached_data = _analysis_cache[cache_key]
+        if now_epoch - cached_ts < 5.0:
+            return jsonify(cached_data)
+
+    from backend.analysis import analyze_telemetry_and_episodes
+
+    conn = get_db(DB_PATH)
+    try:
+        cursor = conn.cursor()
+
+        # If device_id not specified, default to device with most recent data
+        if not device_id:
+            cursor.execute("SELECT device_id FROM telemetry ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            device_id = row["device_id"] if row and row["device_id"] else "vest-01"
+
+        # Determine cutoff timestamp
+        if minutes > 0:
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+            cursor.execute("""
+                SELECT * FROM telemetry
+                WHERE device_id = ? AND ts >= ?
+                ORDER BY id ASC
+            """, (device_id, cutoff))
+            rows = [dict(r) for r in cursor.fetchall()]
+
+            cursor.execute("""
+                SELECT * FROM episodes
+                WHERE device_id = ? AND start_ts >= ? AND end_ts IS NOT NULL
+                ORDER BY id ASC
+            """, (device_id, cutoff))
+            episodes = [dict(r) for r in cursor.fetchall()]
+        else:
+            cursor.execute("""
+                SELECT * FROM telemetry
+                WHERE device_id = ?
+                ORDER BY id ASC
+            """, (device_id,))
+            rows = [dict(r) for r in cursor.fetchall()]
+
+            cursor.execute("""
+                SELECT * FROM episodes
+                WHERE device_id = ? AND end_ts IS NOT NULL
+                ORDER BY id ASC
+            """, (device_id,))
+            episodes = [dict(r) for r in cursor.fetchall()]
+
+        analysis_result = analyze_telemetry_and_episodes(
+            rows=rows,
+            episodes=episodes,
+            range_minutes=minutes,
+            exclude_moving=exclude_moving,
+            device_id=device_id
+        )
+
+        _analysis_cache[cache_key] = (now_epoch, analysis_result)
+        return jsonify(analysis_result)
+
+    finally:
+        conn.close()
+
+
+@app.route("/api/analysis/export.csv", methods=["GET"])
+def export_analysis_csv():
+    """
+    Export 5-second bucket table as CSV.
+    Columns: ts, category, pitch_deg, heart_rate_bpm, temperature_c, humidity_pct, moving_fraction
+    """
+    raw_min = request.args.get("minutes", "60")
+    try:
+        minutes = int(raw_min)
+    except ValueError:
+        return jsonify({"error": "Invalid 'minutes' parameter"}), 400
+
+    if minutes not in (5, 15, 60, 360, 1440, 0):
+        return jsonify({"error": "Allowed minutes values are 5, 15, 60, 360, 1440, or 0 (all)"}), 400
+
+    exclude_moving = request.args.get("exclude_moving", "1").lower() in ("1", "true", "yes")
+    device_id = request.args.get("device_id")
+
+    from backend.analysis import aggregate_into_buckets
+
+    conn = get_db(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        if not device_id:
+            cursor.execute("SELECT device_id FROM telemetry ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            device_id = row["device_id"] if row and row["device_id"] else "vest-01"
+
+        if minutes > 0:
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+            cursor.execute("SELECT * FROM telemetry WHERE device_id = ? AND ts >= ? ORDER BY id ASC", (device_id, cutoff))
+        else:
+            cursor.execute("SELECT * FROM telemetry WHERE device_id = ? ORDER BY id ASC", (device_id,))
+        rows = [dict(r) for r in cursor.fetchall()]
+
+        buckets = aggregate_into_buckets(rows, exclude_moving=exclude_moving)
+
+        import io
+        import csv
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["ts", "category", "pitch_deg", "heart_rate_bpm", "temperature_c", "humidity_pct", "moving_fraction"])
+
+        for b in buckets:
+            writer.writerow([
+                b["ts"],
+                b["category"],
+                round(b["pitch"], 1) if b["pitch"] is not None else "",
+                round(b["hr"], 1) if b["hr"] is not None else "",
+                round(b["temp"], 1) if b["temp"] is not None else "",
+                round(b["hum"], 1) if b["hum"] is not None else "",
+                b["moving_fraction"] if b.get("moving_fraction") is not None else "",
+            ])
+
+        csv_content = output.getvalue()
+        return Response(
+            csv_content,
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=posture_analysis_{device_id}_{minutes}m.csv"}
+        )
+    finally:
+        conn.close()
+
+
 @app.route("/api/commands", methods=["POST"])
 def post_command():
     """

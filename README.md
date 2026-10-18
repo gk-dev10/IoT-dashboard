@@ -79,13 +79,43 @@ python tools/simulate_vest.py --scenario idle
 - `--token`: Device authentication token (default: `change-me`).
 - `--interval`: Push interval in seconds (default: `1.0`).
 - `--scenario`: Simulation scenario (`demo` or `idle`).
-- `--device-id`: Device identifier (default: `vest-01`).
+- `--device-id`: Device identifier (default: `sim-vest-01`).
+- `--effects` / `--no-effects`: Enable physiological HR & DHT11 kinematics (default: on).
 
 The simulator receives commands from the server in real time:
 - **Calibrate:** Enters `CALIBRATING` for 2 seconds, then arms the posture sensors.
 - **Mute:** Silences alarms for the requested duration.
 - **Actuator Test:** Runs 2-second bursts on the buzzer, vibration motor, or status LEDs.
 - **Config:** Dynamically updates bend-on, bend-off, and timing thresholds.
+
+---
+
+## 4. Seeding Demo Data & Posture-Vitals Analysis
+
+The platform features an **Analysis** page (`http://localhost:5000/#/analysis`) correlating posture state against heart rate, near-body air temperature, and humidity using 5-second bucket means, strict sample size transparency, and honest sensor limitation reporting.
+
+### Seeding Synthetic History
+To populate the database directly with realistic demo history:
+
+```powershell
+# Seed 120 minutes of physiological posture effects (sim-vest-01)
+python tools/seed_demo_data.py --minutes 120 --effects --clear-sim
+
+# Or seed control data without posture-heart rate effects
+python tools/seed_demo_data.py --minutes 120 --no-effects --clear-sim
+```
+
+### Seeding Arguments
+- `--minutes`: Minutes of history to generate ending at current timestamp (default: `120`).
+- `--device-id`: Device ID tag (default: `sim-vest-01`, automatically triggers `SIMULATED DATA` banner).
+- `--effects` / `--no-effects`: Simulate posture impact on vitals vs control independent series (default: `--effects`).
+- `--seed`: Deterministic random number seed (default: `42`).
+- `--clear-sim`: Clean existing rows for `sim-` devices before insertion.
+
+### Opening the Analysis Dashboard
+1. Start the backend (`python backend/app.py`).
+2. Navigate to `http://localhost:5000/#/analysis` (or click **Analysis** in the top navigation bar).
+3. Use the segmented range selector (`5 min`, `15 min`, `1 h`, `6 h`, `24 h`, `All`), toggle movement exclusion, inspect the hero overlay chart with posture bands, view the aligned trace during bends, and click **Export CSV** to download 5-second bucket aggregates.
 
 ---
 

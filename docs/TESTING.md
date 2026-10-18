@@ -145,3 +145,62 @@ Open your browser to `http://localhost:5000`.
    - Click **"Test Buzzer"**. Button disables for 2.5s. Simulator prints `[COMMAND RECEIVED] test: buzzer` and activates buzzer for 2s.
    - Click **"Test Vibration"**. Simulator activates vibration for 2s.
    - Click **"Test LEDs"**. Simulator lights green, yellow, and red LEDs for 2s.
+
+---
+
+## 4. Analysis Page Manual Testing Checklist (`#/analysis`)
+
+### State 1: Seeded Data Demonstration
+- **Command:**
+  ```powershell
+  python tools/seed_demo_data.py --minutes 120 --device-id sim-vest-01 --effects --clear-sim
+  ```
+- **Verification:**
+  1. Navigate to `http://localhost:5000/#/analysis`.
+  2. Prominent amber `SIMULATED DATA` banner is displayed.
+  3. Quality strip shows coverage percentages and bucket count.
+  4. Overlay timeline chart displays with tinted posture background bands (Upright green, Warning yellow, Alert red, Sitting blue).
+  5. Vitals by Posture Category shows sample sizes `n` for every metric.
+  6. Aligned heart rate trace rises after t = 0 during bends.
+  7. Automated observations report higher heart rate during bends and changes in temperature.
+
+### State 2: Control Dataset (No Effects)
+- **Command:**
+  ```powershell
+  python tools/seed_demo_data.py --minutes 120 --device-id sim-control --no-effects --clear-sim
+  ```
+- **Verification:**
+  1. Open `http://localhost:5000/#/analysis`.
+  2. Observations report *"No clear heart-rate difference between bending and upright"* (< 3 bpm difference).
+  3. No posture-to-HR correlation reaches `moderate` (|r| < 0.30).
+
+### State 3: Empty Database / No Telemetry in Range
+- **Command:**
+  ```powershell
+  python -c "import sqlite3; conn = sqlite3.connect('backend/vest_v2.db'); conn.execute('DELETE FROM telemetry'); conn.execute('DELETE FROM episodes'); conn.commit()"
+  ```
+- **Verification:**
+  1. Open `http://localhost:5000/#/analysis`.
+  2. Buckets analyzed shows `0`.
+  3. Category columns render *"Not enough data (n = 0, need 12)"*.
+  4. Insights display fallback: *"Not enough data to draw conclusions yet"*.
+  5. No JavaScript errors or NaN values in browser console.
+
+### State 4: Patchy / All-Null Heart Rate
+- **Verification:**
+  1. When heart rate coverage is under 50 %, a warning chip appears in the quality strip: *"Heart-rate signal is patchy — results are unreliable"*.
+  2. An automated insight with level `warning` is displayed first.
+
+### State 5: Constant Values Guard
+- **Verification:**
+  1. If temperature or heart rate is constant, Pearson correlation does not throw division-by-zero errors.
+  2. Scatter plot displays the reason badge: *"No variation in X variable"*.
+
+### State 6: Interactive Controls & Offline Export
+- **Verification:**
+  1. Click **Range selector** buttons (`5 min`, `15 min`, `1 h`, `6 h`, `24 h`, `All`); data refreshes cleanly.
+  2. Toggle **Exclude moving samples (HR)**; heart rate statistics recalculate without page flicker.
+  3. Click **Pause / Resume** auto-refresh; ticker halts and resumes.
+  4. Click **Export CSV**; browser downloads 5-second bucket CSV file with header.
+  5. Click **"How to read this"**; drawer opens on the right side detailing DHT11 and optical sensor limitations.
+

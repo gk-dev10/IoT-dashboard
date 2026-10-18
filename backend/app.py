@@ -105,6 +105,8 @@ def build_live_payload(conn):
 # Static Web Hosting Routes
 # ---------------------------------------------------------------------------
 @app.route("/", methods=["GET"])
+@app.route("/dashboard", methods=["GET"])
+@app.route("/dashboard/", methods=["GET"])
 def index():
     """Serve the v2 web application dashboard."""
     return send_from_directory(WEB_DIR, "index.html")
@@ -116,7 +118,9 @@ def serve_web_assets(path):
     target_file = os.path.join(WEB_DIR, path)
     if os.path.exists(target_file) and not os.path.isdir(target_file):
         return send_from_directory(WEB_DIR, path)
-    # Default back to index.html for unknown web paths
+    if path.startswith(("css/", "js/", "vendor/")):
+        return jsonify({"error": "File not found"}), 404
+    # Default back to index.html for unknown router paths
     return send_from_directory(WEB_DIR, "index.html")
 
 

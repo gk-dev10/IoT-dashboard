@@ -79,6 +79,8 @@ export class HistoryView {
   }
 
   unmount() {
+    window.onmousemove = null;
+    window.onmouseup = null;
     if (this.vitalsChart) {
       try { this.vitalsChart.destroy(); } catch (e) {}
       this.vitalsChart = null;
@@ -289,7 +291,7 @@ export class HistoryView {
         api.fetchSessions({ ...queryParams, limit: 10 }),
       ]);
 
-      this._renderHistoryContent(summary, timeline, daysRes.days || [], sessionsRes.sessions || [], sessionsRes.total || 0);
+      this._renderHistoryContent(summary, timeline, daysRes.days || [], sessionsRes.sessions || [], sessionsRes.total || 0, activeFrom, activeTo);
     } catch (err) {
       contentEl.innerHTML = `
         <div class="placeholder-card" style="margin: 2rem auto; max-width: 500px; text-align: center;">
@@ -303,7 +305,7 @@ export class HistoryView {
     }
   }
 
-  _renderHistoryContent(summary, timeline, days, sessions, totalSessions) {
+  _renderHistoryContent(summary, timeline, days, sessions, totalSessions, activeFrom, activeTo) {
     const contentEl = document.getElementById("hist-content");
 
     if (!timeline.series || timeline.series.length === 0) {
@@ -332,12 +334,12 @@ export class HistoryView {
           <div class="summary-card-hint">${summary.sessions_count || 0} active sessions</div>
         </div>
 
-        <div class="summary-card" title="Percentage of monitored time standing upright or sitting with good posture">
-          <div class="summary-card-label">Good posture</div>
+        <div class="summary-card" title="Percentage of standing time maintaining upright posture">
+          <div class="summary-card-label">Good posture (while standing)</div>
           <div class="summary-card-val" style="color: ${summary.good_posture_percent >= 75 ? 'var(--color-green)' : 'var(--color-yellow)'};">
             ${fmtVal(summary.good_posture_percent, "%")}
           </div>
-          <div class="summary-card-hint">Upright + Sitting</div>
+          <div class="summary-card-hint">While standing</div>
         </div>
 
         <div class="summary-card" title="Total bend events exceeding warning threshold">

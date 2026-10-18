@@ -22,13 +22,16 @@ def parse_args():
     parser.add_argument("--token", default="change-me", help="Device authentication token")
     parser.add_argument("--interval", type=float, default=1.0, help="Upload interval in seconds")
     parser.add_argument("--scenario", choices=["demo", "idle"], default="demo", help="Simulation scenario")
-    parser.add_argument("--device-id", default="vest-01", help="Device ID to report")
+    parser.add_argument("--device-id", default="sim-vest-01", help="Device ID to report (default sim-vest-01)")
+    parser.add_argument("--effects", dest="effects", action="store_true", default=True, help="Simulate posture impact on HR")
+    parser.add_argument("--no-effects", dest="effects", action="store_false", help="Do not couple HR to posture")
     return parser.parse_args()
 
 
 class VestSimulator:
-    def __init__(self, device_id="vest-01"):
+    def __init__(self, device_id="sim-vest-01", effects=True):
         self.device_id = device_id
+        self.effects = effects
         self.fw = "2.1.0-sim"
         self.boot_time = time.time()
 
@@ -254,9 +257,20 @@ class VestSimulator:
             current_hr = None
             finger_present = False
         else:
-            self.heart_rate += random.choice([-1, 0, 0, 1])
+            base_drift = random.choice([-1, 0, 0, 1])
+            self.heart_rate += base_drift
             self.heart_rate = max(60, min(95, self.heart_rate))
-            current_hr = self.heart_rate
+
+            posture_offset = 0.0
+            if self.effects:
+                if state in ("WARNING", "ALERT"):
+                    # +4 to +10 bpm during bends
+                    posture_offset = 6.5
+                elif not self.is_standing:
+                    # -3 to -6 bpm while sitting
+                    posture_offset = -4.0
+
+            current_hr = int(round(self.heart_rate + posture_offset))
             finger_present = True
 
         uptime_s = int(now - self.boot_time)

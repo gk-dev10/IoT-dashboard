@@ -22,6 +22,7 @@ Covers:
 import math
 import os
 import sqlite3
+import json
 import pytest
 from datetime import datetime, timezone, timedelta
 
@@ -212,6 +213,50 @@ def test_api_analysis_minutes_validation(client):
     assert "correlations" in data
     assert "series" in data
     assert "insights" in data
+
+
+@pytest.mark.parametrize("scenario", ["null_hr", "uncalibrated", "single_category", "empty_range"])
+def test_api_analysis_nullable_data_is_finite_json(client, tmp_path, monkeypatch, scenario):
+    """The API must remain standards compliant for sparse and empty telemetry ranges."""
+    from backend.db import init_db
+    import backend.app as app_module
+
+    db_path = str(tmp_path / f"{scenario}.db")
+    init_db(db_path=db_path)
+    monkeypatch.setattr(app_module, "DB_PATH", db_path)
+    app_module._analysis_cache.clear()
+
+    if scenario != "empty_range":
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        conn = sqlite3.connect(db_path)
+        for i in range(15):
+            state = "UNCALIBRATED" if scenario == "uncalibrated" else "UPRIGHT"
+            ts = (now - timedelta(seconds=70 - i * 5)).isoformat()
+            conn.execute(
+                "INSERT INTO telemetry (ts, device_id, state, is_standing, moving, heart_rate_bpm, finger_present, temperature_c, humidity_pct, imu_pitch_deg) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ts, "test-shirt", state, 1, 0, None, 0, 25.5, 48.0, 2.0),
+            )
+        conn.commit()
+        conn.close()
+
+    response = client.get("/api/analysis?minutes=5&device_id=test-shirt")
+    assert response.status_code == 200
+    payload = response.get_json()
+    json.dumps(payload, allow_nan=False)
+    if scenario == "null_hr":
+        assert payload["meta"]["buckets"] > 0
+        assert payload["quality"]["hr_valid_pct"] == 0.0
+        assert payload["by_posture"]["UPRIGHT"]["temp"]["mean"] is not None
+        assert payload["by_posture"]["UPRIGHT"]["hum"]["mean"] is not None
+        assert payload["by_posture"]["UPRIGHT"]["hr"]["mean"] is None
+    elif scenario == "uncalibrated":
+        assert payload["meta"]["buckets"] == 0
+    elif scenario == "single_category":
+        assert payload["meta"]["buckets"] == 15
+        assert payload["by_posture"]["UPRIGHT"]["buckets"] == 15
+        assert all(payload["by_posture"][category]["buckets"] == 0 for category in ("WARNING", "ALERT", "SITTING"))
+    else:
+        assert payload["meta"]["buckets"] == 0
 
 
 def test_api_analysis_export_csv(client):

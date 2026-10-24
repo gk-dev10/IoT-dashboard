@@ -4,6 +4,7 @@
  */
 
 import { api } from "../api.js";
+import { numOr } from "../format.js";
 
 export class ControlsComponent {
   constructor(container) {
@@ -342,10 +343,10 @@ export class ControlsComponent {
       // Check Pending Config confirmation
       if (this.pendingConfigTarget) {
         const matches =
-          Math.abs((telemetry.bend_on_deg || 0) - this.pendingConfigTarget.bend_on_deg) < 0.1 &&
-          Math.abs((telemetry.bend_off_deg || 0) - this.pendingConfigTarget.bend_off_deg) < 0.1 &&
-          Math.abs((telemetry.vibrate_delay_s || 0) - this.pendingConfigTarget.vibrate_delay_s) < 0.1 &&
-          Math.abs((telemetry.buzzer_delay_s || 0) - this.pendingConfigTarget.buzzer_delay_s) < 0.1;
+          Math.abs(numOr(telemetry.bend_on_deg) - this.pendingConfigTarget.bend_on_deg) < 0.1 &&
+          Math.abs(numOr(telemetry.bend_off_deg) - this.pendingConfigTarget.bend_off_deg) < 0.1 &&
+          Math.abs(numOr(telemetry.vibrate_delay_s) - this.pendingConfigTarget.vibrate_delay_s) < 0.1 &&
+          Math.abs(numOr(telemetry.buzzer_delay_s) - this.pendingConfigTarget.buzzer_delay_s) < 0.1;
 
         if (matches) {
           this.configStatusMsg.textContent = "Applied successfully!";

@@ -18,6 +18,7 @@
  */
 
 import { api } from "../api.js";
+import { fmtNum } from "../format.js";
 
 // Posture Category Palette (Section 5)
 const POSTURE_COLORS = {
@@ -356,20 +357,20 @@ export class AnalysisView {
         <div class="quality-grid">
           <div class="quality-item">
             <span class="quality-label">Heart Rate Valid</span>
-            <span class="quality-value ${quality.hr_valid_pct < 50 ? "warn-text" : ""}">${quality.hr_valid_pct.toFixed(1)}%</span>
-            ${quality.hr_valid_pct < 50 ? '<span class="warn-chip">Patchy signal</span>' : ""}
+            <span class="quality-value ${quality.hr_valid_pct > 0 && quality.hr_valid_pct < 50 ? "warn-text" : ""}">${fmtNum(quality.hr_valid_pct, 1)}%</span>
+            ${quality.hr_valid_pct === 0 ? '<span class="warn-chip">No heart-rate data</span>' : quality.hr_valid_pct < 50 ? '<span class="warn-chip">Patchy signal</span>' : ""}
           </div>
           <div class="quality-item">
             <span class="quality-label">Air Temp Valid</span>
-            <span class="quality-value">${quality.temp_valid_pct.toFixed(1)}%</span>
+            <span class="quality-value">${fmtNum(quality.temp_valid_pct, 1)}%</span>
           </div>
           <div class="quality-item">
             <span class="quality-label">Air Hum Valid</span>
-            <span class="quality-value">${quality.hum_valid_pct.toFixed(1)}%</span>
+            <span class="quality-value">${fmtNum(quality.hum_valid_pct, 1)}%</span>
           </div>
           <div class="quality-item">
             <span class="quality-label">Time Moving</span>
-            <span class="quality-value">${quality.moving_pct.toFixed(1)}%</span>
+            <span class="quality-value">${fmtNum(quality.moving_pct, 1)}%</span>
           </div>
           <div class="quality-item">
             <span class="quality-label">Buckets Analysed</span>
@@ -381,13 +382,14 @@ export class AnalysisView {
           </div>
         </div>
         ${
-          quality.hr_valid_pct < 50
+          quality.hr_valid_pct > 0 && quality.hr_valid_pct < 50
             ? '<div class="quality-warning-bar">⚠️ Heart-rate coverage is patchy (< 50%) — heart-rate comparisons are unreliable.</div>'
             : ""
         }
       </section>
 
       <!-- 5.7 Conservative Insights Panel -->
+      ${meta.buckets === 0 ? `<div class="card chart-empty-msg">No analysable data in this range yet${meta.rows > 0 && quality.uncalibrated_pct >= 50 ? " — most readings were skipped because the shirt was not calibrated" : ""}.</div>` : ""}
       <section class="insights-card card">
         <div class="card-header">
           <h2 class="card-title">Automated Observations</h2>
@@ -463,8 +465,8 @@ export class AnalysisView {
           <h2 class="card-title">Bend Episode Impact</h2>
           <span class="summary-highlight">
             ${
-              episode_impact.average && episode_impact.average.delta_during !== null
-                ? `Average change during bends: <strong>${episode_impact.average.delta_during > 0 ? "+" : ""}${episode_impact.average.delta_during.toFixed(1)} bpm</strong> (n = ${episode_impact.average.n} episodes)`
+              episode_impact.average && Number.isFinite(episode_impact.average.delta_during)
+                ? `Average change during bends: <strong>${episode_impact.average.delta_during > 0 ? "+" : ""}${fmtNum(episode_impact.average.delta_during, 1)} bpm</strong> (n = ${episode_impact.average.n} episodes)`
                 : `Not enough episodes (n = ${episode_impact.episodes_used}, need 3)`
             }
           </span>
@@ -583,7 +585,7 @@ export class AnalysisView {
             <span class="cat-title" style="color: ${color}">${catName}</span>
             <span class="cat-time text-faint">${stats ? stats.seconds : 0}s</span>
           </div>
-          <div class="cat-empty-msg">Not enough data (n = ${n}, need 12)</div>
+          <div class="cat-empty-msg">Not enough data yet (n = ${n}, need 12)</div>
         </div>
       `;
     }
@@ -602,51 +604,51 @@ export class AnalysisView {
         <div class="metric-block">
           <div class="metric-name">Heart Rate</div>
           ${
-            hr
+            hr && Number.isFinite(hr.mean)
               ? `
-            <div class="metric-primary">${hr.mean.toFixed(1)} <span class="unit">bpm</span></div>
+            <div class="metric-primary">${fmtNum(hr.mean)} <span class="unit">bpm</span></div>
             <div class="metric-details">
-              <span>med: ${hr.median.toFixed(1)}</span>
-              <span>sd: ±${hr.sd.toFixed(1)}</span>
-              <span>range: ${hr.min}–${hr.max}</span>
+              <span>med: ${fmtNum(hr.median)}</span>
+              <span>sd: ±${fmtNum(hr.sd)}</span>
+              <span>range: ${fmtNum(hr.min)}–${fmtNum(hr.max)}</span>
             </div>
             <div class="metric-n">n = ${hr.n} buckets</div>
           `
-              : '<div class="metric-empty text-faint">No valid HR</div>'
+              : '<div class="metric-primary">— <span class="unit">bpm</span></div><div class="metric-empty text-faint">No heart-rate data</div>'
           }
         </div>
 
         <div class="metric-block">
           <div class="metric-name">Air Temperature</div>
           ${
-            temp
+            temp && Number.isFinite(temp.mean)
               ? `
-            <div class="metric-primary">${temp.mean.toFixed(1)} <span class="unit">°C</span></div>
+            <div class="metric-primary">${fmtNum(temp.mean)} <span class="unit">°C</span></div>
             <div class="metric-details">
-              <span>med: ${temp.median.toFixed(1)}</span>
-              <span>sd: ±${temp.sd.toFixed(1)}</span>
-              <span>range: ${temp.min}–${temp.max}</span>
+              <span>med: ${fmtNum(temp.median)}</span>
+              <span>sd: ±${fmtNum(temp.sd)}</span>
+              <span>range: ${fmtNum(temp.min)}–${fmtNum(temp.max)}</span>
             </div>
             <div class="metric-n">n = ${temp.n} buckets</div>
           `
-              : '<div class="metric-empty text-faint">No temp</div>'
+              : '<div class="metric-primary">— <span class="unit">°C</span></div><div class="metric-empty text-faint">No temperature data</div>'
           }
         </div>
 
         <div class="metric-block">
           <div class="metric-name">Air Humidity</div>
           ${
-            hum
+            hum && Number.isFinite(hum.mean)
               ? `
-            <div class="metric-primary">${hum.mean.toFixed(1)} <span class="unit">%RH</span></div>
+            <div class="metric-primary">${fmtNum(hum.mean)} <span class="unit">%RH</span></div>
             <div class="metric-details">
-              <span>med: ${hum.median.toFixed(1)}</span>
-              <span>sd: ±${hum.sd.toFixed(1)}</span>
-              <span>range: ${hum.min}–${hum.max}</span>
+              <span>med: ${fmtNum(hum.median)}</span>
+              <span>sd: ±${fmtNum(hum.sd)}</span>
+              <span>range: ${fmtNum(hum.min)}–${fmtNum(hum.max)}</span>
             </div>
             <div class="metric-n">n = ${hum.n} buckets</div>
           `
-              : '<div class="metric-empty text-faint">No hum</div>'
+              : '<div class="metric-primary">— <span class="unit">%RH</span></div><div class="metric-empty text-faint">No humidity data</div>'
           }
         </div>
       </div>
@@ -661,9 +663,10 @@ export class AnalysisView {
       .slice(0, 8)
       .map((ep) => {
         const timeStr = ep.start_ts ? new Date(ep.start_ts).toLocaleTimeString() : "—";
-        const durSec = ep.duration_ms ? (ep.duration_ms / 1000).toFixed(1) + "s" : "—";
-        const dDuring = ep.delta_during !== null && ep.delta_during !== undefined
-          ? `${ep.delta_during > 0 ? "+" : ""}${ep.delta_during.toFixed(1)} bpm`
+        const duration = fmtNum(Number.isFinite(ep.duration_ms) ? ep.duration_ms / 1000 : null);
+        const durSec = duration === "—" ? "—" : `${duration}s`;
+        const dDuring = Number.isFinite(ep.delta_during)
+          ? `${ep.delta_during > 0 ? "+" : ""}${fmtNum(ep.delta_during)} bpm`
           : "—";
 
         const badgeColor = POSTURE_COLORS[ep.max_level] || "#8e9fb3";
@@ -673,10 +676,10 @@ export class AnalysisView {
             <td>${timeStr}</td>
             <td>${durSec}</td>
             <td><span class="badge" style="background:${badgeColor}; color:#000; font-size:0.75rem;">${ep.max_level}</span></td>
-            <td>${ep.peak_pitch_deg ? ep.peak_pitch_deg.toFixed(1) + "°" : "—"}</td>
-            <td>${ep.hr_before !== null ? ep.hr_before.toFixed(1) : "—"}</td>
-            <td>${ep.hr_during !== null ? ep.hr_during.toFixed(1) : "—"}</td>
-            <td>${ep.hr_after !== null ? ep.hr_after.toFixed(1) : "—"}</td>
+            <td>${fmtNum(ep.peak_pitch_deg) === "—" ? "—" : fmtNum(ep.peak_pitch_deg) + "°"}</td>
+            <td>${fmtNum(ep.hr_before)}</td>
+            <td>${fmtNum(ep.hr_during)}</td>
+            <td>${fmtNum(ep.hr_after)}</td>
             <td class="${ep.delta_during > 0 ? "highlight-delta" : ""}">${dDuring}</td>
           </tr>
         `;
@@ -686,13 +689,13 @@ export class AnalysisView {
 
   renderCorrelationBadge(corr) {
     if (!corr) return "";
-    if (corr.r === null || corr.r === undefined) {
+    if (!Number.isFinite(corr.r)) {
       return `<div class="corr-badge corr-none">⚠️ ${corr.reason || "Not enough data"}</div>`;
     }
     return `
       <div class="corr-badge corr-valid">
-        <strong>r = ${corr.r.toFixed(2)}</strong> (${corr.strength}, ${corr.direction}, n = ${corr.n})
-        ${corr.slope !== null ? `<small class="slope-text">slope: ${corr.slope.toFixed(2)}</small>` : ""}
+        <strong>r = ${fmtNum(corr.r, 2)}</strong> (${corr.strength}, ${corr.direction}, n = ${corr.n})
+        ${Number.isFinite(corr.slope) ? `<small class="slope-text">slope: ${fmtNum(corr.slope, 2)}</small>` : ""}
       </div>
     `;
   }
@@ -868,12 +871,12 @@ export class AnalysisView {
 
   buildHeroDatasets(series) {
     const minMaxNorm = (vals) => {
-      const valid = vals.filter((v) => v !== null && !isNaN(v));
+      const valid = vals.filter((v) => Number.isFinite(v));
       if (valid.length === 0) return vals;
       const min = Math.min(...valid);
       const max = Math.max(...valid);
-      if (max - min === 0) return vals.map((v) => (v === null ? null : 50));
-      return vals.map((v) => (v === null ? null : ((v - min) / (max - min)) * 100));
+      if (max - min === 0) return vals.map((v) => (Number.isFinite(v) ? 50 : null));
+      return vals.map((v) => (Number.isFinite(v) ? ((v - min) / (max - min)) * 100 : null));
     };
 
     const rawHr = series.map((s) => s.hr);
@@ -1093,7 +1096,7 @@ export class AnalysisView {
       ];
 
       // Add fitted trendline if slope and intercept exist
-      if (corr && corr.slope !== null && corr.intercept !== null) {
+      if (corr && Number.isFinite(corr.slope) && Number.isFinite(corr.intercept)) {
         const xVals = pts.map((p) => p.x);
         const minX = Math.min(...xVals);
         const maxX = Math.max(...xVals);
@@ -1120,7 +1123,7 @@ export class AnalysisView {
             legend: { display: false },
             tooltip: {
               callbacks: {
-                label: (ctx) => `(${ctx.parsed.x.toFixed(1)}, ${ctx.parsed.y.toFixed(1)}) [${pts[ctx.dataIndex] ? pts[ctx.dataIndex].cat : ""}]`,
+                label: (ctx) => `(${fmtNum(ctx.parsed?.x)}, ${fmtNum(ctx.parsed?.y)}) [${pts[ctx.dataIndex] ? pts[ctx.dataIndex].cat : ""}]`,
               },
             },
           },

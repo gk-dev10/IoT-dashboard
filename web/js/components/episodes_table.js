@@ -1,3 +1,5 @@
+import { fmtNum } from "../format.js";
+
 /**
  * Smart Posture T-Shirt v2 — Recent Bend Episodes Table Component.
  * Displays recent stooping episodes with peak pitch, severity, and duration.
@@ -45,9 +47,10 @@ export class EpisodesTableComponent {
       .slice(0, 5)
       .map((ep) => {
         const timeStr = ep.start_ts ? ep.start_ts.substring(11, 19) : "—";
-        const durSec = ep.duration_ms ? (ep.duration_ms / 1000.0).toFixed(1) + " s" : "—";
-        const peakPitch =
-          ep.peak_pitch_deg !== null ? `${ep.peak_pitch_deg.toFixed(1)}°` : "—";
+        const duration = fmtNum(Number.isFinite(ep.duration_ms) ? ep.duration_ms / 1000.0 : null);
+        const durSec = duration === "—" ? "—" : `${duration} s`;
+        const peak = fmtNum(ep.peak_pitch_deg);
+        const peakPitch = peak === "—" ? "—" : `${peak}°`;
         const isClosed = Boolean(ep.end_ts);
         const level = ep.max_level || "WARNING";
 

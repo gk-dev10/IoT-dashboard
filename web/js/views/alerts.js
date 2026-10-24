@@ -15,6 +15,7 @@
 
 import { api } from "../api.js";
 import { store } from "../store.js";
+import { fmtNum, numOr } from "../format.js";
 
 export class AlertsView {
   constructor(container) {
@@ -210,7 +211,7 @@ export class AlertsView {
     const isSlouching = isOnline && (postureState === "WARNING" || postureState === "ALERT");
 
     if (isSlouching) {
-      const durS = Math.round((t.bend_duration_ms || 0) / 1000);
+      const durS = Math.round(numOr(t.bend_duration_ms) / 1000);
       const isAlert = postureState === "ALERT";
       bannerContainer.innerHTML = `
         <div class="live-alert-banner ${isAlert ? '' : 'warning'}">
@@ -302,7 +303,7 @@ export class AlertsView {
       return;
     }
 
-    const fmtVal = (val, suffix = "") => (val !== null && val !== undefined ? `${val}${suffix}` : "Not enough data yet");
+    const fmtVal = (val, suffix = "") => (Number.isFinite(val) ? `${fmtNum(val, null)}${suffix}` : "Not enough data yet");
 
     contentEl.innerHTML = `
       <!-- Summary Cards Row -->
@@ -310,7 +311,7 @@ export class AlertsView {
         <div class="summary-card">
           <div class="summary-card-label">Total Slouches</div>
           <div class="summary-card-val">${summary.slouch_count ?? 0}</div>
-          <div class="summary-card-hint">Total time: ${Math.round((summary.total_slouch_time_s || 0) / 60)} min</div>
+          <div class="summary-card-hint">Total time: ${Math.round(numOr(summary.total_slouch_time_s) / 60)} min</div>
         </div>
 
         <div class="summary-card">
@@ -390,7 +391,7 @@ export class AlertsView {
               ${episodes.map(ep => {
                 const sDate = new Date(ep.start_ts);
                 const timeStr = `${sDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${sDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
-                const durS = Math.round((ep.duration_ms || 0) / 1000);
+                const durS = Math.round(numOr(ep.duration_ms) / 1000);
                 const isAlert = ep.max_level === "ALERT";
                 return `
                   <tr class="slouch-row" data-id="${ep.id}" style="cursor: pointer;">
@@ -399,8 +400,8 @@ export class AlertsView {
                     <td>
                       <span class="status-pill status-${ep.max_level.toLowerCase()}">${isAlert ? 'Alert' : 'Early warning'}</span>
                     </td>
-                    <td>${ep.peak_pitch_deg ? ep.peak_pitch_deg + '°' : '—'}</td>
-                    <td>${ep.hr_change !== null && ep.hr_change !== undefined ? (ep.hr_change > 0 ? '+' : '') + ep.hr_change + ' bpm' : '—'}</td>
+                    <td>${fmtNum(ep.peak_pitch_deg, null) === '—' ? '—' : fmtNum(ep.peak_pitch_deg, null) + '°'}</td>
+                    <td>${fmtNum(ep.hr_change, null) === '—' ? '—' : (ep.hr_change > 0 ? '+' : '') + fmtNum(ep.hr_change, null) + ' bpm'}</td>
                     <td>
                       <button class="btn btn-secondary" style="padding: 0.2rem 0.5rem; font-size: 0.78rem;">Details ›</button>
                     </td>
@@ -551,7 +552,7 @@ export class AlertsView {
       const bodyEl = document.getElementById("slouch-modal-body");
       if (!bodyEl) return;
 
-      const durS = Math.round((detail.duration_ms || 0) / 1000);
+      const durS = Math.round(numOr(detail.duration_ms) / 1000);
       const isAlert = detail.max_level === "ALERT";
       const moments = detail.moments || {};
 
@@ -587,7 +588,7 @@ export class AlertsView {
         <details style="font-size: 0.85rem; color: var(--text-muted); cursor: pointer; margin-top: 1rem;">
           <summary>Technical Details & Thresholds</summary>
           <div style="padding: 0.75rem; background: var(--bg-deep); border-radius: var(--radius-sm); margin-top: 0.5rem; line-height: 1.6;">
-            <div>Peak lean angle: <strong>${detail.peak_pitch_deg}°</strong></div>
+            <div>Peak lean angle: <strong>${fmtNum(detail.peak_pitch_deg, null) === '—' ? '—' : fmtNum(detail.peak_pitch_deg, null) + '°'}</strong></div>
             <div>Device ID: <strong>${detail.device_id}</strong></div>
             <div>Total context points: <strong>${detail.context_series ? detail.context_series.length : 0}</strong></div>
             <div>Vibrate threshold: <strong>20.0° after 5s</strong></div>

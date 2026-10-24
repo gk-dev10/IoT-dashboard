@@ -1,3 +1,5 @@
+import { fmtNum } from "../format.js";
+
 /**
  * Smart Posture T-Shirt v2 — Sensor Diagnostics & Health Strip Component.
  */
@@ -123,6 +125,6 @@ export class SensorHealthComponent {
     this.vPose.textContent = telemetry.is_standing ? "Standing" : "Sitting / Lying";
     this.vMotion.textContent = telemetry.moving ? "Active (Moving)" : "Still";
     this.vTilt.textContent =
-      telemetry.adxl_tilt_deg !== null ? `${telemetry.adxl_tilt_deg.toFixed(1)}°` : "—";
+      fmtNum(telemetry.adxl_tilt_deg) === "—" ? "—" : `${fmtNum(telemetry.adxl_tilt_deg)}°`;
   }
 }

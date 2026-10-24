@@ -14,6 +14,7 @@
  */
 
 import { api } from "../api.js";
+import { fmtNum, numOr } from "../format.js";
 
 export class HistoryView {
   constructor(container) {
@@ -323,7 +324,7 @@ export class HistoryView {
       return;
     }
 
-    const fmtVal = (val, suffix = "") => (val !== null && val !== undefined ? `${val}${suffix}` : "Not enough data yet");
+    const fmtVal = (val, suffix = "") => (Number.isFinite(val) ? `${fmtNum(val, null)}${suffix}` : "Not enough data yet");
 
     contentEl.innerHTML = `
       <!-- Summary Cards Row -->
@@ -357,7 +358,7 @@ export class HistoryView {
         <div class="summary-card" title="Time spent sitting vs standing">
           <div class="summary-card-label">Time sitting</div>
           <div class="summary-card-val">${fmtVal(summary.percent_per_category?.SITTING, "%")}</div>
-          <div class="summary-card-hint">${Math.round((summary.time_per_category?.SITTING || 0) / 60)} min seated</div>
+          <div class="summary-card-hint">${Math.round(numOr(summary.time_per_category?.SITTING) / 60)} min seated</div>
         </div>
 
         <div class="summary-card" title="Average heart rate during valid readings">
@@ -417,8 +418,8 @@ export class HistoryView {
                 <div style="font-size: 0.72rem; color: var(--text-faint);">Sitting: ${fmtVal(d.posture_share?.SITTING, "%")} of monitored time</div>
               </div>
               <div style="font-size: 0.88rem; color: var(--text-main);">${d.slouch_count} slouches</div>
-              <div style="font-size: 0.88rem; color: var(--text-muted);">${d.longest_slouch_s ? d.longest_slouch_s + 's peak' : '—'}</div>
-              <div style="font-size: 0.88rem; color: var(--text-muted);">${d.avg_heart_rate_bpm ? d.avg_heart_rate_bpm + ' bpm' : '—'}</div>
+              <div style="font-size: 0.88rem; color: var(--text-muted);">${fmtVal(d.longest_slouch_s, 's')}</div>
+              <div style="font-size: 0.88rem; color: var(--text-muted);">${fmtVal(d.avg_heart_rate_bpm, ' bpm')}</div>
             </div>
           `).join("")}
         </div>
@@ -445,7 +446,7 @@ export class HistoryView {
                   <div><span style="color: var(--text-muted);">Good posture (while standing):</span> <strong style="color: var(--color-green);">${fmtVal(s.good_posture_percent, "%")}</strong></div>
                   <div><span style="color: var(--text-muted);">Sitting:</span> <strong>${fmtVal(s.sitting_percent, "%")}</strong></div>
                   <div><span style="color: var(--text-muted);">Slouches:</span> <strong>${s.slouch_count}</strong></div>
-                  <div><span style="color: var(--text-muted);">Heart rate:</span> <strong>${s.avg_heart_rate_bpm ? s.avg_heart_rate_bpm + ' bpm' : '—'}</strong></div>
+                  <div><span style="color: var(--text-muted);">Heart rate:</span> <strong>${fmtVal(s.avg_heart_rate_bpm, ' bpm')}</strong></div>
                 </div>
               </div>
             `;
@@ -827,14 +828,14 @@ export class HistoryView {
               <tr>
                 <td>${r.local_time}</td>
                 <td><span class="status-pill status-${(r.posture_category || 'upright').toLowerCase()}">${r.posture_category}</span></td>
-                <td>${r.lean_angle !== null ? r.lean_angle + '°' : '—'}</td>
+                <td>${fmtNum(r.lean_angle, null) === '—' ? '—' : fmtNum(r.lean_angle, null) + '°'}</td>
                 <td>${r.is_standing ? 'Yes' : 'No (Sitting)'}</td>
-                <td>${r.heart_rate !== null ? r.heart_rate + ' bpm' : '—'}</td>
-                <td>${r.temperature_c !== null ? r.temperature_c + '°C' : '—'}</td>
-                <td>${r.humidity_pct !== null ? r.humidity_pct + '%' : '—'}</td>
+                <td>${fmtNum(r.heart_rate, null) === '—' ? '—' : fmtNum(r.heart_rate, null) + ' bpm'}</td>
+                <td>${fmtNum(r.temperature_c, null) === '—' ? '—' : fmtNum(r.temperature_c, null) + '°C'}</td>
+                <td>${fmtNum(r.humidity_pct, null) === '—' ? '—' : fmtNum(r.humidity_pct, null) + '%'}</td>
                 ${this.readingsMoreCols ? `
-                  <td>${r.imu_roll_deg !== null ? r.imu_roll_deg + '°' : '—'}</td>
-                  <td>${r.adxl_tilt_deg !== null ? r.adxl_tilt_deg + '°' : '—'}</td>
+                  <td>${fmtNum(r.imu_roll_deg, null) === '—' ? '—' : fmtNum(r.imu_roll_deg, null) + '°'}</td>
+                  <td>${fmtNum(r.adxl_tilt_deg, null) === '—' ? '—' : fmtNum(r.adxl_tilt_deg, null) + '°'}</td>
                   <td>${r.mpu_ok && r.adxl_ok ? 'OK' : 'ERR'}</td>
                 ` : ""}
               </tr>

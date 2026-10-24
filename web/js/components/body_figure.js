@@ -3,6 +3,8 @@
  * Visualizes user spine pitch, sitting/standing thigh posture, and motion tag.
  */
 
+import { fmtNum, numOr } from "../format.js";
+
 export class BodyFigureComponent {
   constructor(container) {
     this.container = container;
@@ -108,7 +110,7 @@ export class BodyFigureComponent {
     const isStanding = Boolean(telemetry.is_standing);
     const moving = Boolean(telemetry.moving);
     const state = (telemetry.state || "UPRIGHT").toUpperCase();
-    const bendOn = telemetry.bend_on_deg || 20.0;
+    const bendOn = numOr(telemetry.bend_on_deg, 20.0);
 
     // 1. Moving tag
     this.movingTag.style.display = moving ? "inline-block" : "none";
@@ -133,22 +135,22 @@ export class BodyFigureComponent {
     const rayLength = 120;
     const rx = rayLength * Math.sin(rad);
     const ry = -rayLength * Math.cos(rad);
-    this.thresholdRay.setAttribute("x2", rx.toFixed(1));
-    this.thresholdRay.setAttribute("y2", ry.toFixed(1));
-    this.thresholdLabel.setAttribute("x", (rx + 4).toFixed(1));
-    this.thresholdLabel.setAttribute("y", (ry - 3).toFixed(1));
-    this.thresholdLabel.textContent = `${bendOn.toFixed(0)}°`;
+    this.thresholdRay.setAttribute("x2", fmtNum(rx));
+    this.thresholdRay.setAttribute("y2", fmtNum(ry));
+    this.thresholdLabel.setAttribute("x", fmtNum(rx + 4));
+    this.thresholdLabel.setAttribute("y", fmtNum(ry - 3));
+    this.thresholdLabel.textContent = `${fmtNum(bendOn, 0)}°`;
 
     // 4. Trunk pitch rotation
-    if (pitch === null || pitch === undefined) {
+    if (!Number.isFinite(pitch)) {
       this.torsoGroup.setAttribute("transform", "rotate(0, 120, 160)");
       this.pitchVal.textContent = "—";
     } else {
       // Clamp pitch to ±50° for reasonable visual bounds
       const clampedPitch = Math.max(-50.0, Math.min(50.0, pitch));
       // In SVG: positive angle rotates clockwise (forward lean)
-      this.torsoGroup.setAttribute("transform", `rotate(${clampedPitch.toFixed(1)}, 120, 160)`);
-      this.pitchVal.textContent = `${pitch >= 0 ? "+" : ""}${pitch.toFixed(1)}°`;
+      this.torsoGroup.setAttribute("transform", `rotate(${fmtNum(clampedPitch)}, 120, 160)`);
+      this.pitchVal.textContent = `${pitch >= 0 ? "+" : ""}${fmtNum(pitch)}°`;
     }
 
     // 5. State color feedback

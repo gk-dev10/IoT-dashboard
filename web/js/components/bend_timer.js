@@ -1,3 +1,5 @@
+import { fmtNum, numOr } from "../format.js";
+
 /**
  * Smart Posture T-Shirt v2 — Circular Bend Duration Timer Ring Component.
  * Visualizes continuous stooping duration with tactile threshold markers.
@@ -67,9 +69,9 @@ export class BendTimerComponent {
       return;
     }
 
-    const vibDelay = telemetry.vibrate_delay_s || 5.0;
-    const buzDelay = telemetry.buzzer_delay_s || 15.0;
-    const durationMs = telemetry.bend_duration_ms || 0;
+    const vibDelay = numOr(telemetry.vibrate_delay_s, 5.0);
+    const buzDelay = Math.max(0.001, numOr(telemetry.buzzer_delay_s, 15.0));
+    const durationMs = numOr(telemetry.bend_duration_ms);
     const durationS = durationMs / 1000.0;
     const state = (telemetry.state || "UPRIGHT").toUpperCase();
 
@@ -83,7 +85,7 @@ export class BendTimerComponent {
     this.markerBuzzer.setAttribute("transform", `rotate(360 90 90)`);
 
     // Center display
-    this.secondsDisplay.textContent = durationS.toFixed(1);
+    this.secondsDisplay.textContent = fmtNum(durationS);
 
     // Compute progress fraction relative to buzzer delay (full ring = buzzer delay)
     const fraction = Math.min(1.0, durationS / buzDelay);

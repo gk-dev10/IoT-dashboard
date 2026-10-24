@@ -4,6 +4,7 @@
  */
 
 import { api } from "../api.js";
+import { numOr } from "../format.js";
 import { store } from "../store.js";
 import { BodyFigureComponent } from "../components/body_figure.js";
 import { BendTimerComponent } from "../components/bend_timer.js";
@@ -187,7 +188,7 @@ export class LiveView {
       this.lblConnText.textContent = "LIVE";
     } else {
       this.pillConnection.className = "status-pill pill-offline";
-      const secStr = seconds_since_last !== null ? `${Math.round(seconds_since_last)} s ago` : "offline";
+      const secStr = Number.isFinite(seconds_since_last) ? `${Math.round(seconds_since_last)} s ago` : "offline";
       this.lblConnText.textContent = `OFFLINE — last seen ${secStr}`;
     }
 
@@ -199,8 +200,8 @@ export class LiveView {
     this.lblWifiRssi.textContent =
       telemetry.wifi_rssi !== null ? `${telemetry.wifi_rssi} dBm` : "— dBm";
 
-    if (telemetry.uptime_s !== null) {
-      const upSec = telemetry.uptime_s;
+    if (Number.isFinite(telemetry.uptime_s)) {
+      const upSec = numOr(telemetry.uptime_s);
       const m = Math.floor(upSec / 60);
       const s = upSec % 60;
       this.lblUptime.textContent = `${m}m ${s}s`;

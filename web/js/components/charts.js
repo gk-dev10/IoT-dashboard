@@ -3,6 +3,8 @@
  * Powered by vendored Chart.js (offline UMD).
  */
 
+import { fmtNum, numOr } from "../format.js";
+
 export class ChartsComponent {
   constructor(pitchContainer, hrContainer, envContainer) {
     this.pitchContainer = pitchContainer;
@@ -159,7 +161,7 @@ export class ChartsComponent {
             mode: "index",
             intersect: false,
             callbacks: {
-              label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}°`,
+              label: (ctx) => `${ctx.dataset.label}: ${fmtNum(ctx.parsed?.y)}°`,
             },
           },
         },
@@ -240,10 +242,10 @@ export class ChartsComponent {
       return;
     }
 
-    const bendOn = latestTelemetry.bend_on_deg || 20.0;
-    const bendOff = latestTelemetry.bend_off_deg || 15.0;
-    this.bendOnLbl.textContent = `${bendOn.toFixed(0)}°`;
-    this.bendOffLbl.textContent = `${bendOff.toFixed(0)}°`;
+    const bendOn = numOr(latestTelemetry.bend_on_deg, 20.0);
+    const bendOff = numOr(latestTelemetry.bend_off_deg, 15.0);
+    this.bendOnLbl.textContent = `${fmtNum(bendOn, 0)}°`;
+    this.bendOffLbl.textContent = `${fmtNum(bendOff, 0)}°`;
 
     // 1. Update HR readout
     if (latestTelemetry.finger_present && latestTelemetry.heart_rate_bpm) {
@@ -258,9 +260,9 @@ export class ChartsComponent {
 
     // 2. Update Air temp / Humidity readout
     this.airTempDisplay.textContent =
-      latestTelemetry.temperature_c !== null ? latestTelemetry.temperature_c.toFixed(1) : "—";
+      fmtNum(latestTelemetry.temperature_c, 1);
     this.humidityDisplay.textContent =
-      latestTelemetry.humidity_pct !== null ? latestTelemetry.humidity_pct.toFixed(0) : "—";
+      fmtNum(latestTelemetry.humidity_pct, 0);
 
     // 3. Update Chart datasets from rolling history
     if (!this.pitchChart || !Array.isArray(history) || history.length === 0) {

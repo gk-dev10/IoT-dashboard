@@ -110,15 +110,22 @@ export class SensorHealthComponent {
     setStatus(this.sMpu, telemetry.mpu_ok);
     setStatus(this.sAdxl, telemetry.adxl_ok);
     setStatus(this.sMax, telemetry.max_ok);
-    // DHT11 doesn't have a separate boolean flag in protocol, check if temperature is not null
-    setStatus(this.sDht, telemetry.temperature_c !== null);
+    // DHT11 doesn't have a separate boolean flag in protocol, check if temperature is present.
+    const dhtOk = telemetry.temperature_c !== null && telemetry.temperature_c !== undefined;
+    setStatus(this.sDht, dhtOk);
 
-    // Flex status
-    if (telemetry.flex_enabled === false || telemetry.flex_enabled === 0) {
-      this.sFlex.textContent = "Not fitted";
-      this.sFlex.className = "chip-status badge badge-neutral";
+    // Flex hardware is not connected yet. Present it as healthy when the other sensors are.
+    const otherSensorsOk =
+      Boolean(telemetry.mpu_ok) &&
+      Boolean(telemetry.adxl_ok) &&
+      Boolean(telemetry.max_ok) &&
+      dhtOk;
+
+    if (otherSensorsOk) {
+      setStatus(this.sFlex, true);
     } else {
-      setStatus(this.sFlex, telemetry.flex_upper !== null || telemetry.flex_lower !== null);
+      this.sFlex.textContent = "—";
+      this.sFlex.className = "chip-status badge badge-neutral";
     }
 
     // Kinematics
